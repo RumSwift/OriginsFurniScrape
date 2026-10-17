@@ -93,7 +93,7 @@
                 if (!r) continue;
                 const p = { ...base, direction: d };
                 if (firstState !== null) p.state = firstState;
-                const label = r.kind === 'native' ? `dir ${d}` : r.kind === 'mirror' ? `dir ${d} (flip of ${r.dir})` : `dir ${d} (uses ${r.dir})`;
+                const label = r.kind === 'native' ? `dir ${d}` : r.flipped ? `dir ${d} (flip of ${r.dir})` : `dir ${d} (uses ${r.dir})`;
                 dirCell.append(fig(cls, label, p, r.kind !== 'native'));
             }
 

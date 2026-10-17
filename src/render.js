@@ -10,7 +10,7 @@ const { GIFEncoder, quantize, applyPalette } = gifenc;
 
 export const SHADOW_ALPHA = 0.3;
 /** Bump when output changes, so cached renders are not served stale. */
-export const RENDER_VERSION = 3;
+export const RENDER_VERSION = 4;
 
 // Director ink numbers -> blend operator. 33/34 add, 35/38 subtract, 37 lightest, 39 darkest are standard Director.
 // 40 (lighten) and 41 (darken) exist in the client's ink table; the exact formulas are NOT verified (screen / multiply guessed).

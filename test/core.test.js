@@ -126,7 +126,7 @@ test('API: info, layering, colour, animation, validation', async () => {
   } finally { await app.close(); }
 });
 
-test('rotations: mirror flips the whole item incl. shadow; single-direction items are never flipped', async () => {
+test('rotations: mirror flips the whole item incl. shadow; single-sprite items alternate', async () => {
   const app = await buildApp();
   try {
     // dir 4 is the mirror of dir 2: pixel-exact horizontal flip, shadow included
@@ -139,13 +139,18 @@ test('rotations: mirror flips the whole item incl. shadow; single-direction item
     // fallback=none refuses a rotation with no sprites; default uses the nearest native direction
     assert.equal((await app.inject('/render/tst?direction=4&mirror=0&fallback=none')).statusCode, 404);
     assert.equal((await app.inject('/render/tst?direction=4&mirror=0')).headers['x-direction-used'], '2:nearest');
-    // solo has only direction 0: every rotation shows it, unflipped
+    assert.equal((await app.inject('/render/tst?direction=6')).headers['x-direction-used'], '0f:mirror'); // 6 is always the flip of 0
+    // solo has a single sprite (dir 0): 6 is the flip of 0; otherwise the whole item mirrors on every rotation step
     const base = decode((await app.inject('/render/solo?direction=0&shadow=1')).rawPayload);
-    for (const dir of [2, 4, 6]) {
+    const expect = { 2: ['0f:nearest', true], 4: ['0:nearest', false], 6: ['0f:mirror', true] };
+    for (const [dir, [used, flipped]] of Object.entries(expect)) {
       const r = await app.inject(`/render/solo?direction=${dir}&shadow=1`);
-      assert.equal(r.headers['x-direction-used'], '0:nearest');
-      assert.ok(decode(r.rawPayload).data.equals(base.data), `dir ${dir}`);
+      assert.equal(r.headers['x-direction-used'], used, `dir ${dir}`);
+      const d = decode(r.rawPayload);
+      assert.ok(d.data.equals(flipped ? flipRows(base) : base.data), `dir ${dir} pixels`);
     }
+    // mirror=0 disables all flipping
+    assert.ok(decode((await app.inject('/render/solo?direction=2&mirror=0')).rawPayload).data.equals(decode((await app.inject('/render/solo?direction=0&mirror=0')).rawPayload).data));
   } finally { await app.close(); }
 });
 

@@ -104,23 +104,25 @@ export class Furni {
   /**
    * Which native direction to draw for a requested one, as { dir, flipped, kind } (or null if the item has no sprites at this size).
    *  native  - the item has sprites for exactly this direction
-   *  mirror  - item has >1 native directions and the mirrored one ((6-d)%8) exists: draw that, flipped horizontally
-   *  nearest - otherwise the closest native direction, unflipped (e.g. plants that only have direction 0)
-   * A single-direction item is never flipped.
+   *  mirror  - the pair partner exists ((6-d)%8: 6<->0, 4<->2): draw it flipped horizontally
+   *  nearest - no partner either: take the closest native sprite and mirror the whole item on every other rotation step
+   *            (0 normal, 2 flipped, 4 normal, 6 flipped), so a single-sprite item just toggles between two looks
+   * mirror=false never flips; fallback=false returns null instead of using the nearest sprite.
    */
   resolveDirection(direction, size = 64, mirror = true, nearest = true) {
     const dirs = this.directions(size);
     if (!dirs.length) return null;
     if (dirs.includes(direction)) return { dir: direction, flipped: false, kind: 'native' };
     const md = (((6 - direction) % 8) + 8) % 8;
-    if (mirror && dirs.length > 1 && md !== direction && dirs.includes(md)) return { dir: md, flipped: true, kind: 'mirror' };
+    if (mirror && md !== direction && dirs.includes(md)) return { dir: md, flipped: true, kind: 'mirror' };
     if (!nearest) return null;
     let best = null;
     for (const d of dirs) {
       const dist = Math.min((d - direction + 8) % 8, (direction - d + 8) % 8);
       if (!best || dist < best.dist) best = { dir: d, dist };
     }
-    return { dir: best.dir, flipped: false, kind: 'nearest' };
+    const parity = (x) => (x >> 1) % 2;
+    return { dir: best.dir, flipped: mirror && parity(direction) !== parity(best.dir), kind: 'nearest' };
   }
 
   /** Member name of a layer at an exact direction (frame falls back to 0), or null. */
