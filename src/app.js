@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
@@ -97,6 +98,9 @@ export async function buildApp({ logger = false } = {}) {
   });
   app.setNotFoundHandler((req, reply) => reply.code(404).send({ detail: 'Not Found' }));
   sync.hooks.onFinished = () => { store.clearCache(); R.clearCache(); };
+
+  const galleryHtml = fs.readFileSync(fileURLToPath(new URL('./gallery.html', import.meta.url)));
+  app.get('/gallery', async (req, reply) => reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(galleryHtml));
 
   app.get('/healthz', async () => ({
     ok: true, bundles: D.get("SELECT COUNT(*) c FROM bundles WHERE status='ok'").c, sync_running: sync.STATUS.running,
