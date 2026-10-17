@@ -4,7 +4,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import sharp from 'sharp';
+import pngjs from 'pngjs';
+
+const { PNG } = pngjs;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'furni-'));
 const src = path.join(tmp, 'src');
@@ -17,7 +19,8 @@ const { parse, LingoError } = await import('../src/lingo.js');
 const sync = await import('../src/sync.js');
 const { buildApp } = await import('../src/app.js');
 
-const png = (rgba, w = 4, h = 4) => sharp(Buffer.from(Array.from({ length: w * h }, () => rgba).flat()), { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+const png = async (rgba, w = 4, h = 4) => PNG.sync.write({ width: w, height: h, data: Buffer.from(Array.from({ length: w * h }, () => rgba).flat()) });
+const decode = (b) => PNG.sync.read(b);
 
 test('bundle roundtrip and rejection', () => {
   const key = Buffer.from('k');
@@ -36,13 +39,13 @@ test('lingo', () => {
 async function makeFixture() {
   const man = {
     bundle: { cast: { key: 'c' }, members: {
-      bitmaps: [
-        { id: 1, name: 'tst_a_0_1_1_2_0', regPoint: [4, 8], width: 4, height: 4 },
-        { id: 2, name: 'tst_b_0_1_1_2_0', regPoint: [2, 6], width: 4, height: 4 },
-        { id: 3, name: 'tst_b_0_1_1_2_1', regPoint: [2, 6], width: 4, height: 4 },
-        { id: 4, name: 'tst_b_0_1_1_0_0', regPoint: [2, 6], width: 4, height: 4 },
-      ],
-      fields: [{ id: 1, name: 'tst.props' }, { id: 2, name: 'tst.data' }], palettes: [] } },
+        bitmaps: [
+          { id: 1, name: 'tst_a_0_1_1_2_0', regPoint: [4, 8], width: 4, height: 4 },
+          { id: 2, name: 'tst_b_0_1_1_2_0', regPoint: [2, 6], width: 4, height: 4 },
+          { id: 3, name: 'tst_b_0_1_1_2_1', regPoint: [2, 6], width: 4, height: 4 },
+          { id: 4, name: 'tst_b_0_1_1_0_0', regPoint: [2, 6], width: 4, height: 4 },
+        ],
+        fields: [{ id: 1, name: 'tst.props' }, { id: 2, name: 'tst.data' }], palettes: [] } },
   };
   const red = await png([255, 0, 0, 255]), blue = await png([0, 0, 255, 255]), green = await png([0, 255, 0, 255]);
   const bundle = seal(man, {
@@ -78,7 +81,8 @@ test('sync from a local source, then the API', async () => {
 
     const r = await app.inject('/render/tst?direction=2');
     assert.equal(r.statusCode, 200);
-    const { data, info: im } = await sharp(r.rawPayload).raw().toBuffer({ resolveWithObject: true });
+    const { data, width, height } = decode(r.rawPayload);
+    const im = { width, height };
     // a: x -4..0, y -8..-4 ; b (in front): x -2..2, y -6..-2  -> union 6 wide, 6 tall
     assert.deepEqual([im.width, im.height], [6, 6]);
     const px = (x, y) => [...data.subarray((y * 6 + x) * 4, (y * 6 + x) * 4 + 4)];
@@ -91,12 +95,15 @@ test('sync from a local source, then the API', async () => {
     assert.equal((await app.inject('/render/tst?direction=4&mirror=0')).statusCode, 404);
     // colour multiply on layer b only
     const c = await app.inject('/render/tst?colors=,00ff00');
-    const cd = await sharp(c.rawPayload).raw().toBuffer();
+    const cd = decode(c.rawPayload).data;
     assert.deepEqual([...cd.subarray((3 * 6 + 3) * 4, (3 * 6 + 3) * 4 + 4)], [0, 0, 0, 255]); // blue x green = black
     // animated state 1 has 2 frames
     const gif = await app.inject('/render/tst?state=1&format=gif');
     assert.equal(gif.headers['content-type'], 'image/gif');
-    assert.equal((await sharp(gif.rawPayload, { animated: true }).metadata()).pages, 2);
+    assert.equal(gif.rawPayload.subarray(0, 6).toString(), 'GIF89a');
+    const frames = [...gif.rawPayload.entries()].filter(([i, b]) => b === 0x21 && gif.rawPayload[i + 1] === 0xf9 && gif.rawPayload[i + 2] === 4).length;
+    assert.equal(frames, 2); // 2 animation frames
+    assert.equal((await app.inject('/render/tst?format=webp')).statusCode, 400);
     // validation
     assert.equal((await app.inject('/render/tst?size=48')).statusCode, 400);
     assert.equal((await app.inject('/render/tst?colors=zz')).statusCode, 400);

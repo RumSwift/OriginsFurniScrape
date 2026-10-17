@@ -106,14 +106,14 @@ export async function buildApp({ logger = false } = {}) {
     const q = req.query;
     const prefix = strq(q, 'q', 100).replace(/[%\\]/g, '').replace(/_/g, '\\_') + '%';
     const rows = D.all("SELECT class, bundle FROM classes WHERE class LIKE ? ESCAPE '\\' ORDER BY class LIMIT ? OFFSET ?",
-      prefix, int(q, 'limit', 100, 1, 1000), int(q, 'offset', 0, 0, 1e9));
+        prefix, int(q, 'limit', 100, 1, 1000), int(q, 'offset', 0, 0, 1e9));
     return { count: rows.length, items: rows };
   });
 
   app.get('/furni/new', async (req) => {
     const days = flt(req.query, 'days', 7, 0.0001, 3650);
     const rows = D.all("SELECT name, revision, first_seen, synced_at FROM bundles WHERE first_seen>=? AND status='ok' ORDER BY first_seen DESC LIMIT ?",
-      Date.now() / 1000 - days * 86400, int(req.query, 'limit', 200, 1, 2000));
+        Date.now() / 1000 - days * 86400, int(req.query, 'limit', 200, 1, 2000));
     const items = rows.map((r) => ({
       ...r,
       classes: D.all("SELECT class FROM classes WHERE bundle=? AND class NOT LIKE 's\\_%' ESCAPE '\\' AND class NOT LIKE '%\\_small' ESCAPE '\\'", r.name).map((c) => c.class),
@@ -141,7 +141,7 @@ export async function buildApp({ logger = false } = {}) {
     const shadow = bool(q, 'shadow', false), mirror = bool(q, 'mirror', true);
     const matte = oneOf(q, 'matte', 'edge', ['edge', 'exact']);
     const scale = int(q, 'scale', 1, 1, 4), pad = int(q, 'pad', 0, 0, 64), fps = int(q, 'fps', 8, 1, 30);
-    const format = oneOf(q, 'format', 'png', ['png', 'gif', 'webp']);
+    const format = oneOf(q, 'format', 'png', ['png', 'gif']);
     const bgParam = strq(q, 'bg', 7);
     const bg = bgParam ? R.hexToRgb(bgParam) : null;
     if (bgParam && !bg) throw new HttpError(400, 'bg must be a 6-digit hex colour');

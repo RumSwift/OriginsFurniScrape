@@ -1,7 +1,12 @@
 // Composite a furniture item the way the client does: layers a,b,c... placed by registration point,
 // ordered by per-direction z-shift, with ink (matte / background-transparent), blend and optional colouring.
 // Images are plain { width, height, data: Buffer(RGBA, straight alpha) }.
-import sharp from 'sharp';
+import fs from 'node:fs';
+import gifenc from 'gifenc';
+import pngjs from 'pngjs';
+
+const { PNG } = pngjs;
+const { GIFEncoder, quantize, applyPalette } = gifenc;
 
 export const SHADOW_ALPHA = 0.3;
 
@@ -18,14 +23,18 @@ export const hexToRgb = (h) => (/^#?[0-9a-f]{6}$/i.test(h) ? parseColors(h)[0] :
 // ---------------------------------------------------------------- PNG cache
 const pngCache = new Map();
 export function clearCache() { pngCache.clear(); }
+/** Decode a PNG file to straight-alpha RGBA. Pure JS (no native image library). */
+export function decodePng(buf) {
+  const p = PNG.sync.read(buf);
+  return { width: p.width, height: p.height, data: p.data };
+}
 export async function loadPng(file) {
-  let p = pngCache.get(file);
-  if (p) { pngCache.delete(file); pngCache.set(file, p); return p; }
-  p = sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
-    .then(({ data, info }) => ({ width: info.width, height: info.height, data }));
-  pngCache.set(file, p);
+  let img = pngCache.get(file);
+  if (img) { pngCache.delete(file); pngCache.set(file, img); return img; }
+  img = decodePng(fs.readFileSync(file));
+  pngCache.set(file, img);
   if (pngCache.size > 2048) pngCache.delete(pngCache.keys().next().value);
-  try { return await p; } catch (e) { pngCache.delete(file); throw e; }
+  return img;
 }
 
 // ---------------------------------------------------------------- ink handling
@@ -117,9 +126,9 @@ export async function layout(furni, { direction = 2, state = null, frame = 0, si
 }
 
 const bbox = (parts) => parts.length
-  ? [Math.min(...parts.map((p) => p.x)), Math.min(...parts.map((p) => p.y)),
-    Math.max(...parts.map((p) => p.x + p.img.width)), Math.max(...parts.map((p) => p.y + p.img.height))]
-  : null;
+    ? [Math.min(...parts.map((p) => p.x)), Math.min(...parts.map((p) => p.y)),
+      Math.max(...parts.map((p) => p.x + p.img.width)), Math.max(...parts.map((p) => p.y + p.img.height))]
+    : null;
 
 /** Alpha-composite parts onto a transparent canvas. Returns { img, ox, oy } (ox/oy = tile origin inside img). */
 export function compose(parts, box = null, pad = 0) {
@@ -182,19 +191,47 @@ function finish(img, scale = 1, bg = null) {
   return { width: w, height: h, data };
 }
 
-/** frames: [{img}]; returns { data: Buffer, mime } */
+const encodePng = (img) => PNG.sync.write({ width: img.width, height: img.height, data: img.data }, { deflateLevel: 9 });
+
+/** Indexed pixels + palette for one frame: exact palette when it fits (pixel art usually does), else quantised. Index 255 = transparent. */
+function indexFrame(img) {
+  const { data, width, height } = img, n = width * height;
+  const colors = new Map(), index = new Uint8Array(n);
+  let exact = true;
+  for (let i = 0; i < n && exact; i++) {
+    if (data[i * 4 + 3] < 128) { index[i] = 255; continue; }
+    const key = (data[i * 4] << 16) | (data[i * 4 + 1] << 8) | data[i * 4 + 2];
+    let c = colors.get(key);
+    if (c === undefined) { c = colors.size; if (c >= 255) { exact = false; break; } colors.set(key, c); }
+    index[i] = c;
+  }
+  const palette = Array.from({ length: 256 }, () => [0, 0, 0]);
+  if (exact) {
+    for (const [key, c] of colors) palette[c] = [key >> 16, (key >> 8) & 255, key & 255];
+  } else {
+    const pal = quantize(data, 255, { format: 'rgb565' });
+    const idx = applyPalette(data, pal, 'rgb565');
+    pal.forEach((p, i) => { palette[i] = p.slice(0, 3); });
+    for (let i = 0; i < n; i++) index[i] = data[i * 4 + 3] < 128 ? 255 : idx[i];
+  }
+  return { index, palette };
+}
+
+function encodeGif(imgs, delay) {
+  const { width, height } = imgs[0];
+  const gif = GIFEncoder();
+  imgs.forEach((img, i) => {
+    const { index, palette } = indexFrame(img);
+    gif.writeFrame(index, width, height, { palette, delay, transparent: true, transparentIndex: 255, dispose: 2, repeat: 0 });
+    void i;
+  });
+  gif.finish();
+  return Buffer.from(gif.bytes());
+}
+
+/** frames: [{img}]; returns { data: Buffer, mime }. Formats: png (first frame) | gif (animated). */
 export async function encode(frames, fmt = 'png', fps = 8, scale = 1, bg = null) {
   const imgs = frames.map((f) => finish(f.img, scale, bg));
-  const { width, height } = imgs[0];
-  const animated = imgs.length > 1 && fmt !== 'png';
-  const raw = Buffer.concat(imgs.map((i) => i.data));
-  const input = animated
-    ? { raw: { width, height: height * imgs.length, channels: 4, pageHeight: height } }
-    : { raw: { width, height, channels: 4 } };
-  let s = sharp(animated ? raw : imgs[0].data, input);
-  const delay = Math.max(20, Math.trunc(1000 / Math.max(1, fps)));
-  const delays = Array(imgs.length).fill(delay);
-  if (fmt === 'gif') return { data: await s.gif({ delay: delays, loop: 0, effort: 7 }).toBuffer(), mime: 'image/gif' };
-  if (fmt === 'webp') return { data: await s.webp({ lossless: true, delay: delays, loop: 0 }).toBuffer(), mime: 'image/webp' };
-  return { data: await s.png({ compressionLevel: 9 }).toBuffer(), mime: 'image/png' };
+  if (fmt === 'gif') return { data: encodeGif(imgs, Math.max(20, Math.trunc(1000 / Math.max(1, fps)))), mime: 'image/gif' };
+  return { data: encodePng(imgs[0]), mime: 'image/png' };
 }
