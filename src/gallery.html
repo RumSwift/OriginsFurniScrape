@@ -86,11 +86,15 @@
             const dirCell = el('div', { class: 'cell' }, el('h3', {}, 'Directions'));
             let dirs = native.slice();
             if (allrot) dirs = [...new Set([0, 2, 4, 6, ...native])].sort((a, b) => a - b);
+            const rot = (info.rotations || {})[size] || {};
             if (!native.length) dirCell.append(el('span', { class: 'empty' }, `no ${size}px sprites`));
             else for (const d of dirs) {
+                const r = rot[d];
+                if (!r) continue;
                 const p = { ...base, direction: d };
                 if (firstState !== null) p.state = firstState;
-                dirCell.append(fig(cls, `dir ${d}${native.includes(d) ? '' : ' (mirrored)'}`, p, !native.includes(d)));
+                const label = r.kind === 'native' ? `dir ${d}` : r.kind === 'mirror' ? `dir ${d} (flip of ${r.dir})` : `dir ${d} (uses ${r.dir})`;
+                dirCell.append(fig(cls, label, p, r.kind !== 'native'));
             }
 
             // states / animation
@@ -102,10 +106,15 @@
             }
 
             const frames = Object.values(info.frames || {}).reduce((m, f) => Math.max(m, f.length), 0);
+            const INK = { 0: 'copy', 8: 'matte', 32: 'blend', 33: 'add', 34: 'add', 35: 'sub', 36: 'bg-transp', 37: 'lightest', 38: 'sub', 39: 'darkest', 40: 'lighten?', 41: 'darken?' };
+            const lp = Object.entries(info.layer_props || {}).filter(([, v]) => v.ink !== null && ![8, 36].includes(v.ink)).map(([L, v]) => `${L}: ink ${v.ink} ${INK[v.ink] || ''}${v.blend !== null ? ' @' + v.blend + '%' : ''}`);
+            const light = info.lighting && info.lighting.behavior ? ` · light: ${info.lighting.behavior}` : '';
             const meta = el('div', { class: 'meta' },
                 `${info.layers.length} layer${info.layers.length === 1 ? '' : 's'} · ${frames} frame${frames === 1 ? '' : 's'}`,
                 info.dimensions ? ` · ${info.dimensions[0]}×${info.dimensions[1]}` : '',
+                light, lp.length ? el('br') : '', lp.join(' · '),
                 el('br'), `bundle ${info.bundle} r${info.revision} · `,
+                el('a', { href: `${API}/furni/${encodeURIComponent(cls)}/layers?direction=2`, target: '_blank', rel: 'noopener' }, 'layers'), ' · ',
                 el('a', { href: `${API}/furni/${encodeURIComponent(cls)}`, target: '_blank', rel: 'noopener' }, 'json'));
             r.el.replaceChildren(el('div', {}, el('div', { class: 'name' }, cls), meta), dirCell, stCell);
         }

@@ -9,6 +9,13 @@ const { PNG } = pngjs;
 const { GIFEncoder, quantize, applyPalette } = gifenc;
 
 export const SHADOW_ALPHA = 0.3;
+/** Bump when output changes, so cached renders are not served stale. */
+export const RENDER_VERSION = 3;
+
+// Director ink numbers -> blend operator. 33/34 add, 35/38 subtract, 37 lightest, 39 darkest are standard Director.
+// 40 (lighten) and 41 (darken) exist in the client's ink table; the exact formulas are NOT verified (screen / multiply guessed).
+const INK_MODE = { 33: 'add', 34: 'add', 35: 'sub', 38: 'sub', 37: 'lightest', 39: 'darkest', 40: 'screen', 41: 'multiply' };
+export const inkMode = (ink) => INK_MODE[ink] ?? 'normal';
 
 export function parseColors(s) {
   return (s || '').split(',').map((p) => {
@@ -97,32 +104,64 @@ function zshift(props, dir) {
 }
 const num = (v, def) => (typeof v === 'number' ? Math.trunc(v) : def);
 
-/** -> [{ img, x, y }] relative to the tile origin, in draw order. */
-export async function layout(furni, { direction = 2, state = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge' } = {}) {
-  const items = [];
-  if (shadow && furni.shadow[size]) {
-    const m = furni.members[furni.shadow[size]];
-    const im = prepare(await loadPng(`${furni.dir}/${m.file}`), { ink: 8, blend: Math.trunc(SHADOW_ALPHA * 100), matte });
-    items.push({ z: -10000, li: -1, img: im, x: -m.regPoint[0], y: -m.regPoint[1] });
+/** Count of visible pixels and their tight box inside an image: { vis, minx, miny, maxx, maxy }. */
+function tight(img) {
+  let vis = 0, minx = img.width, miny = img.height, maxx = -1, maxy = -1;
+  for (let y = 0; y < img.height; y++) for (let x = 0; x < img.width; x++) {
+    if (img.data[(y * img.width + x) * 4 + 3]) { vis++; if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; }
   }
+  return { vis, minx, miny, maxx, maxy };
+}
+const OUTLIER_MAX_PIXELS = 64, OUTLIER_MIN_GAP = 60;
+const gap = (a, b) => Math.max(a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3], 0);
+
+/**
+ * -> [{ img, x, y, mode, layer, member, ... }] relative to the tile origin, in draw order.
+ * The array carries `.all` (every layer incl. dropped ones, with flags), `.res` (resolved direction) and `.dropped` (layer letters).
+ * Layers with no visible pixels are skipped. With outliers='hide' (default) a tiny sprite (<64 visible px) lying >60px away from
+ * the rest of the item is dropped: those are scripted-effect anchors / hidden-state markers, not part of the picture.
+ */
+export async function layout(furni, { direction = 2, state = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', fallback = 'nearest', outliers = 'hide' } = {}) {
+  const res = furni.resolveDirection(direction, size, mirror, fallback === 'nearest');
+  const none = Object.assign([], { all: [], res: null, dropped: [] });
+  if (!res) return none;
+  const items = [];
   await Promise.all(furni.layers.map(async (layer, li) => {
     let fr = frame;
     if (state !== null) {
       const lf = furni.layerFrames(layer, state);
       if (lf) fr = lf[frame % lf.length];
     }
-    const pick = furni.sprite(layer, direction, fr, size, mirror);
-    if (!pick) return;
-    const m = furni.members[pick.name];
+    const name = furni.spriteAt(layer, res.dir, fr, size);
+    if (!name) return;
+    const m = furni.members[name];
     const props = furni.layerProps(layer);
-    let im = prepare(await loadPng(`${furni.dir}/${m.file}`), { ink: num(props.ink, 8), color: colors[li] ?? null, blend: num(props.blend, 100), matte });
+    const ink = num(props.ink, 8);
+    let im = prepare(await loadPng(`${furni.dir}/${m.file}`), { ink, color: colors[li] ?? null, blend: num(props.blend, 100), matte });
     const [rx, ry] = m.regPoint;
     let x = -rx;
-    if (pick.flipped) { im = flipX(im); x = rx - im.width; }
-    items.push({ z: zshift(props, direction), li, img: im, x, y: -ry });
+    if (res.flipped) { im = flipX(im); x = rx - im.width; }
+    const t = tight(im);
+    if (!t.vis) return; // nothing to draw
+    items.push({ z: zshift(props, res.dir), li, layer, member: name, ink, img: im, x, y: -ry, vis: t.vis,
+      box: [x + t.minx, -ry + t.miny, x + t.maxx + 1, -ry + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
   }));
+  const big = items.filter((i) => i.vis >= OUTLIER_MAX_PIXELS);
+  if (big.length) {
+    const main = [Math.min(...big.map((i) => i.box[0])), Math.min(...big.map((i) => i.box[1])), Math.max(...big.map((i) => i.box[2])), Math.max(...big.map((i) => i.box[3]))];
+    for (const i of items) if (i.vis < OUTLIER_MAX_PIXELS && gap(i.box, main) > OUTLIER_MIN_GAP) i.outlier = true;
+  }
+  if (shadow && furni.shadow[size] && items.length) {
+    const m = furni.members[furni.shadow[size]];
+    let im = prepare(await loadPng(`${furni.dir}/${m.file}`), { ink: 8, blend: Math.trunc(SHADOW_ALPHA * 100), matte });
+    const [rx, ry] = m.regPoint;
+    let x = -rx;
+    if (res.flipped) { im = flipX(im); x = rx - im.width; }
+    items.push({ z: -10000, li: -1, layer: 'shadow', member: furni.shadow[size], ink: 8, img: im, x, y: -ry, vis: tight(im).vis, box: null, mode: 'normal', outlier: false });
+  }
   items.sort((a, b) => a.z - b.z || a.li - b.li);
-  return items.map(({ img, x, y }) => ({ img, x, y }));
+  const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
+  return Object.assign(keep, { all: items, res, dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
 }
 
 const bbox = (parts) => parts.length
@@ -130,13 +169,48 @@ const bbox = (parts) => parts.length
       Math.max(...parts.map((p) => p.x + p.img.width)), Math.max(...parts.map((p) => p.y + p.img.height))]
     : null;
 
-/** Alpha-composite parts onto a transparent canvas. Returns { img, ox, oy } (ox/oy = tile origin inside img). */
-export function compose(parts, box = null, pad = 0) {
+const CH = {
+  add: (d, s) => Math.min(255, d + s),
+  sub: (d, s) => Math.max(0, d - s),
+  lightest: (d, s) => Math.max(d, s),
+  darkest: (d, s) => Math.min(d, s),
+  screen: (d, s) => 255 - ((255 - d) * (255 - s)) / 255,
+  multiply: (d, s) => (d * s) / 255,
+};
+
+/**
+ * Non-normal ink onto the canvas. Where something is already drawn (alpha da) the operator is exact.
+ * Where nothing is drawn yet (a glow beyond the furniture) the result is an "emission" pixel: colour
+ * normalised to full brightness, alpha = brightness, so that over black it equals the added colour.
+ */
+function blendInto(out, d, sr, sg, sb, sa, mode) {
+  const a = sa / 255, daN = out[d + 3] / 255, op = CH[mode];
+  const maxc = Math.max(sr, sg, sb);
+  let ue, ur, ug, ub;
+  if (mode === 'add' || mode === 'screen') {
+    if (!maxc && !daN) return;
+    ue = (maxc / 255) * a; ur = (sr * 255) / (maxc || 1); ug = (sg * 255) / (maxc || 1); ub = (sb * 255) / (maxc || 1);
+  } else if (mode === 'sub') { ue = (maxc / 255) * a; ur = ug = ub = 0; }
+  else { ue = a; ur = sr; ug = sg; ub = sb; }
+  ue *= 1 - daN;
+  const oa = daN + ue;
+  if (oa <= 0) return;
+  const src = [sr, sg, sb], dst = [out[d], out[d + 1], out[d + 2]], uc = [ur, ug, ub];
+  for (let c = 0; c < 3; c++) {
+    const cov = dst[c] + (op(dst[c], src[c]) - dst[c]) * a; // exact operator on what is already there
+    out[d + c] = Math.round((cov * daN + uc[c] * ue) / oa);
+  }
+  out[d + 3] = Math.round(oa * 255);
+}
+
+/** Composite parts onto a canvas (transparent, or opaque `bg` so every ink is exact). Returns { img, ox, oy }. */
+export function compose(parts, box = null, pad = 0, bg = null) {
   box = box ?? bbox(parts);
   if (!box) return null;
   const x0 = box[0] - pad, y0 = box[1] - pad, W = box[2] + pad - x0, H = box[3] + pad - y0;
   const out = Buffer.alloc(W * H * 4);
-  for (const { img, x, y } of parts) {
+  if (bg) for (let i = 0; i < W * H; i++) out.set([bg[0], bg[1], bg[2], 255], i * 4);
+  for (const { img, x, y, mode = 'normal' } of parts) {
     for (let sy = 0; sy < img.height; sy++) {
       const dy = sy + y - y0;
       if (dy < 0 || dy >= H) continue;
@@ -146,6 +220,7 @@ export function compose(parts, box = null, pad = 0) {
         const s = (sy * img.width + sx) * 4, d = (dy * W + dx) * 4;
         const sa = img.data[s + 3];
         if (!sa) continue;
+        if (mode !== 'normal') { blendInto(out, d, img.data[s], img.data[s + 1], img.data[s + 2], sa, mode); continue; }
         const da = out[d + 3];
         if (sa === 255 || !da) { out[d] = img.data[s]; out[d + 1] = img.data[s + 1]; out[d + 2] = img.data[s + 2]; out[d + 3] = sa; continue; }
         const dw = (da * (255 - sa)) / 255, oa = sa + dw;
@@ -157,19 +232,21 @@ export function compose(parts, box = null, pad = 0) {
   return { img: { width: W, height: H, data: out }, ox: -x0, oy: -y0 };
 }
 
-export async function render(furni, { pad = 0, ...opts } = {}) {
-  return compose(await layout(furni, opts), null, pad);
+export async function render(furni, { pad = 0, bg = null, ...opts } = {}) {
+  const parts = await layout(furni, opts);
+  const out = compose(parts, null, pad, bg);
+  return out && { ...out, res: parts.res, dropped: parts.dropped };
 }
 
 /** Animation: one image per step, all on a shared canvas so nothing jitters. */
-export async function renderFrames(furni, { direction = 2, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', pad = 0, maxFrames = 64 } = {}) {
+export async function renderFrames(furni, { direction = 2, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', fallback = 'nearest', outliers = 'hide', pad = 0, bg = null, maxFrames = 64 } = {}) {
   let n = 1;
   if (state !== null) for (const L of furni.layers) { const lf = furni.layerFrames(L, state); if (lf) n = Math.max(n, lf.length); }
   n = Math.min(n, maxFrames);
   const sets = [];
-  for (let i = 0; i < n; i++) sets.push(await layout(furni, { direction, state, frame: i, size, colors, shadow, mirror, matte }));
+  for (let i = 0; i < n; i++) sets.push(await layout(furni, { direction, state, frame: i, size, colors, shadow, mirror, matte, inks, fallback, outliers }));
   const box = bbox(sets.flat());
-  return box ? sets.map((s) => compose(s, box, pad)) : [];
+  return box ? sets.map((s) => ({ ...compose(s, box, pad, bg), res: s.res, dropped: s.dropped })) : [];
 }
 
 // ---------------------------------------------------------------- output

@@ -16,7 +16,7 @@ export function splitClass(cls) {
 }
 
 export const lookupBundle = (base) =>
-  D.get('SELECT c.bundle, b.revision, b.sha256, b.first_seen FROM classes c JOIN bundles b ON b.name=c.bundle WHERE c.class=?', base) ?? null;
+    D.get('SELECT c.bundle, b.revision, b.sha256, b.first_seen FROM classes c JOIN bundles b ON b.name=c.bundle WHERE c.class=?', base) ?? null;
 
 const k = (d, f) => `${d}_${f}`;
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
@@ -31,6 +31,8 @@ export class Furni {
     this.props = this.#readLingo(`${cls}.props`, '.props');
     this.data = this.#readLingo(`${cls}.data`, '.data');
     this.#index();
+    const lc = this.meta.lighting?.classes ?? {};
+    this.lighting = lc[cls] ?? lc[Object.keys(lc).find((k) => k.toLowerCase() === cls.toLowerCase())] ?? null;
   }
 
   #text(name) {
@@ -99,15 +101,33 @@ export class Furni {
     return [...s].sort((a, b) => a - b);
   }
 
-  /** -> { name, flipped } or null. Fallbacks: exact -> mirrored direction -> frame 0. */
-  sprite(layer, direction, frame, size = 64, mirror = true) {
+  /**
+   * Which native direction to draw for a requested one, as { dir, flipped, kind } (or null if the item has no sprites at this size).
+   *  native  - the item has sprites for exactly this direction
+   *  mirror  - item has >1 native directions and the mirrored one ((6-d)%8) exists: draw that, flipped horizontally
+   *  nearest - otherwise the closest native direction, unflipped (e.g. plants that only have direction 0)
+   * A single-direction item is never flipped.
+   */
+  resolveDirection(direction, size = 64, mirror = true, nearest = true) {
+    const dirs = this.directions(size);
+    if (!dirs.length) return null;
+    if (dirs.includes(direction)) return { dir: direction, flipped: false, kind: 'native' };
+    const md = (((6 - direction) % 8) + 8) % 8;
+    if (mirror && dirs.length > 1 && md !== direction && dirs.includes(md)) return { dir: md, flipped: true, kind: 'mirror' };
+    if (!nearest) return null;
+    let best = null;
+    for (const d of dirs) {
+      const dist = Math.min((d - direction + 8) % 8, (direction - d + 8) % 8);
+      if (!best || dist < best.dist) best = { dir: d, dist };
+    }
+    return { dir: best.dir, flipped: false, kind: 'nearest' };
+  }
+
+  /** Member name of a layer at an exact direction (frame falls back to 0), or null. */
+  spriteAt(layer, direction, frame, size = 64) {
     const t = this.sprites[size].get(layer);
     if (!t) return null;
-    for (const fr of frame ? [frame, 0] : [0]) {
-      if (t.has(k(direction, fr))) return { name: t.get(k(direction, fr)), flipped: false };
-      const md = (((6 - direction) % 8) + 8) % 8;
-      if (mirror && md !== direction && t.has(k(md, fr))) return { name: t.get(k(md, fr)), flipped: true };
-    }
+    for (const fr of frame ? [frame, 0] : [0]) if (t.has(k(direction, fr))) return t.get(k(direction, fr));
     return null;
   }
 
@@ -140,6 +160,12 @@ export class Furni {
       class: this.cls, bundle: this.meta.bundle, revision: this.meta.revision, layers: this.layers,
       directions: this.directions(64), directions_small: this.directions(32), states: this.states(),
       has_shadow: !!this.shadow[64], dimensions: this.dim, has_icon: !!this.icon(), frames,
+      layer_props: Object.fromEntries(this.layers.map((L) => {
+        const p = this.layerProps(L);
+        return [L, { ink: typeof p.ink === 'number' ? p.ink : null, blend: typeof p.blend === 'number' ? p.blend : null, zshift: p.zshift ?? null }];
+      })),
+      lighting: this.lighting,
+      rotations: Object.fromEntries([64, 32].map((sz) => [sz, Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7].map((d) => [d, this.resolveDirection(d, sz)]).filter(([, v]) => v))])),
     };
   }
 }

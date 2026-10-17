@@ -105,6 +105,7 @@ export async function unpack(data, bundle, info, destRoot) {
   if (config.KEEP_IDX) fs.mkdirSync(path.join(tmp, 'idx'));
   const meta = {
     bundle, revision: info.revision, sha256: info.sha256, members: {}, fields: {},
+    lighting: man.bundle?.furnitureLighting ?? null, // client's dynamic-lighting data (lamp/candle/tv/fireplace...), kept verbatim
     palettes: Object.fromEntries((members.palettes ?? []).map((p) => [p.name, (p.colors ?? []).length])),
   };
   const findAsset = (suffix) => { for (const [k, v] of assets) if (k.endsWith(suffix)) return v; return null; };
@@ -231,6 +232,20 @@ export async function run({ only = null, force = false } = {}) {
     running = false;
     hooks.onFinished();
   }
+}
+
+/** Re-unpack every already-downloaded bundle from the raw .hcb files on disk (no network). */
+export async function reunpackAll() {
+  let ok = 0, failed = 0;
+  for (const r of D.all("SELECT name, revision, sha256, path FROM bundles WHERE status='ok'")) {
+    try {
+      const f = path.join(config.RAW_DIR, safeFile(r.name), path.basename(r.path));
+      await unpack(fs.readFileSync(f), r.name, { revision: r.revision, sha256: r.sha256 }, config.FURNI_DIR);
+      ok++;
+    } catch (e) { failed++; log('error', `reunpack ${r.name}: ${e.message}`); }
+  }
+  hooks.onFinished();
+  return { ok, failed };
 }
 
 export function startScheduler() {

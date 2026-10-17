@@ -67,14 +67,14 @@ async function cached(key, ext, make) {
     const [data, meta] = [fs.readFileSync(file), JSON.parse(fs.readFileSync(path.join(dir, `${key}.json`), 'utf8'))];
     return { data, ...meta };
   } catch { /* miss */ }
-  const { data, mime, ox, oy } = await make();
+  const { data, mime, ox, oy, used, dropped } = await make();
   fs.mkdirSync(dir, { recursive: true });
   const tag = crypto.randomBytes(4).toString('hex');
-  fs.writeFileSync(path.join(dir, `${key}.json.${tag}.tmp`), JSON.stringify({ mime, ox, oy }));
+  fs.writeFileSync(path.join(dir, `${key}.json.${tag}.tmp`), JSON.stringify({ mime, ox, oy, used, dropped }));
   fs.renameSync(path.join(dir, `${key}.json.${tag}.tmp`), path.join(dir, `${key}.json`));
   fs.writeFileSync(`${file}.${tag}.tmp`, data);
   fs.renameSync(`${file}.${tag}.tmp`, file);
-  return { data, mime, ox, oy };
+  return { data, mime, ox, oy, used, dropped };
 }
 
 function send(req, reply, { data, mime }, key, extra = {}) {
@@ -135,6 +135,19 @@ export async function buildApp({ logger = false } = {}) {
     return info;
   });
 
+  /** Debug: every layer's member, registration point, ink, visible pixels and whether it was dropped as an outlier. */
+  app.get('/furni/:cls/layers', async (req) => {
+    const q = req.query, { furni } = lookup(req.params.cls);
+    const size = int(q, 'size', 64, 1, 1000);
+    const direction = int(q, 'direction', 2, 0, 7), state = q.state === undefined ? null : int(q, 'state', null, 0, 9999);
+    const parts = await R.layout(furni, { direction, state, size, frame: int(q, 'frame', 0, 0, 999), outliers: 'hide' });
+    return {
+      class: furni.cls, requested_direction: direction, resolved: parts.res,
+      layers: parts.all.map((p) => ({ layer: p.layer, member: p.member, regPoint: furni.members[p.member]?.regPoint, size: [p.img.width, p.img.height],
+        offset: [p.x, p.y], visible_pixels: p.vis, box: p.box, ink: p.ink, mode: p.mode, zshift: p.z, dropped_as_outlier: p.outlier })),
+    };
+  });
+
   app.get('/render/:cls', async (req, reply) => {
     const q = req.query, cls = req.params.cls;
     const direction = int(q, 'direction', 2, 0, 7);
@@ -146,23 +159,27 @@ export async function buildApp({ logger = false } = {}) {
     const matte = oneOf(q, 'matte', 'edge', ['edge', 'exact']);
     const scale = int(q, 'scale', 1, 1, 4), pad = int(q, 'pad', 0, 0, 64), fps = int(q, 'fps', 8, 1, 30);
     const format = oneOf(q, 'format', 'png', ['png', 'gif']);
+    const fallback = oneOf(q, 'fallback', 'nearest', ['nearest', 'none']); // nearest = use the closest native direction when a rotation has no sprites
+    const outliers = oneOf(q, 'outliers', 'hide', ['hide', 'keep']);    // hide = drop tiny far-away marker sprites
+    const inks = oneOf(q, 'inks', 'client', ['client', 'flat']); // client = additive/subtract/etc. glow layers; flat = treat every layer as plain
     const bgParam = strq(q, 'bg', 7);
     const bg = bgParam ? R.hexToRgb(bgParam) : null;
     if (bgParam && !bg) throw new HttpError(400, 'bg must be a 6-digit hex colour');
     const { furni, variant } = lookup(cls);
     const colors = await colorsFor(furni.cls === cls ? cls : cls.split('*')[0], variant, strq(q, 'colors', 200));
-    const key = crypto.createHash('sha1').update(JSON.stringify([cls, furni.meta.revision, direction, state, frame, size, colors, shadow, mirror, matte, scale, bg, pad, fps, format])).digest('hex');
+    const key = crypto.createHash('sha1').update(JSON.stringify([R.RENDER_VERSION, cls, furni.meta.revision, direction, state, frame, size, colors, shadow, mirror, matte, inks, fallback, outliers, scale, bg, pad, fps, format])).digest('hex');
     const out = await cached(key, format, async () => {
       let frames;
       if (format === 'png') {
-        const r = await R.render(furni, { direction, state, frame, size, colors, shadow, mirror, matte, pad });
+        const r = await R.render(furni, { direction, state, frame, size, colors, shadow, mirror, matte, inks, fallback, outliers, pad, bg });
         frames = r ? [r] : [];
-      } else frames = await R.renderFrames(furni, { direction, state, size, colors, shadow, mirror, matte, pad });
+      } else frames = await R.renderFrames(furni, { direction, state, size, colors, shadow, mirror, matte, inks, fallback, outliers, pad, bg });
       if (!frames.length) throw new HttpError(404, `no sprite for direction ${direction} at size ${size}`);
       const enc = await R.encode(frames, format, fps, scale, bg);
-      return { ...enc, ox: frames[0].ox * scale, oy: frames[0].oy * scale };
+      const f0 = frames[0];
+      return { ...enc, ox: f0.ox * scale, oy: f0.oy * scale, used: f0.res ? `${f0.res.dir}${f0.res.flipped ? 'f' : ''}:${f0.res.kind}` : '', dropped: (f0.dropped ?? []).join(',') };
     });
-    return send(req, reply, out, key, { 'X-Revision': String(furni.meta.revision), 'X-Origin-X': String(out.ox), 'X-Origin-Y': String(out.oy) });
+    return send(req, reply, out, key, { 'X-Revision': String(furni.meta.revision), 'X-Origin-X': String(out.ox), 'X-Origin-Y': String(out.oy), 'X-Direction-Used': out.used ?? '', 'X-Dropped-Layers': out.dropped ?? '' });
   });
 
   /** All native directions side by side. */
@@ -176,7 +193,7 @@ export async function buildApp({ logger = false } = {}) {
     const colors = await colorsFor(req.params.cls.split('*')[0], variant, strq(q, 'colors', 200));
     let dirs = furni.directions(size).filter((d) => [0, 2, 4, 6].includes(d));
     if (!dirs.length) dirs = furni.directions(size);
-    const shots = (await Promise.all(dirs.map((d) => R.render(furni, { direction: d, state, size, colors, shadow })))).filter(Boolean);
+    const shots = (await Promise.all(dirs.map((d) => R.render(furni, { direction: d, state, size, colors, shadow, bg: null })))).filter(Boolean);
     if (!shots.length) throw new HttpError(404, 'nothing to render');
     const W = shots.reduce((a, s) => a + s.img.width + 8, 8), H = Math.max(...shots.map((s) => s.img.height)) + 16;
     const parts = []; let x = 8;
@@ -207,6 +224,7 @@ export async function buildApp({ logger = false } = {}) {
     sync.run({ force: bool(req.query, 'force', false) }).catch((e) => req.log.error(e));
     return { started: true };
   });
+  app.post('/admin/reunpack', { preHandler: admin }, async () => sync.reunpackAll());
   app.get('/admin/status', { preHandler: admin }, async () => ({ sync: sync.STATUS, last: JSON.parse(D.kvGet('last_sync', 'null')) }));
 
   return app;
