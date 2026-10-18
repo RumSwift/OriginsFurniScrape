@@ -99,26 +99,29 @@ export class Furni {
     try { const v = parse(t); return isObj(v) ? v : {}; } catch (e) { if (e instanceof LingoError) return {}; throw e; }
   }
 
+  /** Bundle alias index, lines `name=target` where a trailing `*` on the target means "horizontally flipped copy" (the client negates the member number). */
   #readAlias() {
     const out = new Map();
-    for (const part of (this.#text('memberalias.index') ?? '').split(/[*\r\n]+/)) {
-      const i = part.indexOf('=');
-      if (i >= 0) out.set(part.slice(0, i).trim(), part.slice(i + 1).trim());
+    for (const line of (this.#text('memberalias.index') ?? '').split(/[\r\n]+/)) {
+      const i = line.indexOf('=');
+      if (i < 0) continue;
+      let target = line.slice(i + 1).trim(), flip = 0;
+      if (target.endsWith('*')) { flip = 1; target = target.slice(0, -1).trim(); }
+      if (target) out.set(line.slice(0, i).trim(), [target, flip]);
     }
     return out;
   }
 
   /**
-   * Follows aliases to a real bundle member: -> { name, flip } or null. The client's global alias table (data/furniture-aliases.json)
-   * carries the horizontal flip (flip=1: mirrored copy of the target); the bundle's own memberalias.index is a plain rename.
+   * Follows aliases to a real bundle member: -> { name, flip } or null. Flips come from the bundle's own alias index (`target*`) and
+   * from the client's global alias table (data/furniture-aliases.json, flip=1).
    */
   resolve(name) {
     let flip = false;
     for (let i = 0; i < 8; i++) {
       if (Object.hasOwn(this.members, name) || this.ext.has(name)) return { name, flip };
-      const g = aliasOf(name);
-      if (g) { name = g[0]; if (g[1]) flip = !flip; } else if (this.alias.has(name)) name = this.alias.get(name);
-      else return null;
+      const g = this.alias.get(name) ?? aliasOf(name);
+      if (g) { name = g[0]; if (g[1]) flip = !flip; } else return null;
       if (!Object.hasOwn(this.members, name) && !this.ext.has(name)) { const f = foreign(name); if (f) this.ext.set(name, { dir: f.dir, m: f.hit }); }
     }
     return Object.hasOwn(this.members, name) || this.ext.has(name) ? { name, flip } : null;
@@ -172,8 +175,27 @@ export class Furni {
     this.wallVariants = [...this.vsprites.keys()];
   }
 
-  /** Wall furniture only has two orientations: 2 = leftwall, 4 = rightwall; any direction is mapped to the nearer one (0-3 left, 4-7 right). */
-  effDir(direction) { return this.isWall ? (direction >= 4 ? 4 : 2) : direction; }
+  /**
+   * The client's direction search (Active Object solveMembers, layer a): try the requested direction, then direction 0, then the next
+   * direction up to 7 (no wrapping). -> { dir, sprite } where `dir` is the direction the object ends up with (drives z-shift and
+   * locshift) and `sprite` the direction whose sprites are drawn; null = the client would show its placeholder.
+   * Wall furniture only has two orientations: 2 = leftwall, 4 = rightwall (0-3 -> left, 4-7 -> right).
+   */
+  #search(direction, size = 64, variant = null) {
+    if (this.isWall) { const d = direction >= 4 ? 4 : 2; return { dir: d, sprite: d }; }
+    const t = this.#tbls(variant)[size];
+    const L = t.has('a') ? 'a' : this.layers.find((x) => t.has(x));
+    const m = t.get(L);
+    if (!m) return null;
+    for (let d = direction; d <= 7; d++) {
+      if (m.has(k(d, 0))) return { dir: d, sprite: d };
+      if (m.has(k(0, 0))) return { dir: d, sprite: 0 };
+    }
+    return null;
+  }
+
+  /** Direction used for z-shift / locshift lookups (the requested one, or what the client's search ended on). */
+  effDir(direction, size = 64, variant = null) { return this.#search(direction, size, variant)?.dir ?? direction; }
 
   #tbls(variant) { return variant && this.vsprites.has(variant) ? this.vsprites.get(variant) : this.sprites; }
 
@@ -186,17 +208,15 @@ export class Furni {
     return v && typeof v.x === 'number' && typeof v.y === 'number' ? [v.x, v.y] : [0, 0];
   }
 
-  /** Shadow sprite for a direction: tries the per-direction names first, then the single `_sd`. -> { name, flipped } or null */
+  /**
+   * Shadow sprite, as the client picks it: `<class>_sd_<direction>` if the bundle (or alias table) has it, else `<class>_sd`.
+   * -> { name, flipped } or null. Flipping comes only from alias entries.
+   */
   shadowFor(direction, size = 64, mirror = true) {
     if (this.isWall) return null; // wall items have no floor shadow
     const pre = size === 32 ? `s_${this.cls}` : this.cls;
-    const dirs = [direction];
-    if (mirror) dirs.push((((6 - direction) % 8) + 8) % 8);
-    for (const [i, d] of dirs.entries()) {
-      const cands = [`${pre}_sd_${d}`, `${pre}_sd_0_${d}_0`, ...(this.dim ? [`${pre}_sd_0_${this.dim[0]}_${this.dim[1]}_${d}_0`] : [])];
-      if (d === 0 || i === 0) cands.push(`${pre}_sd`);
-      for (const c of cands) { const r = this.resolve(c); if (r) return { name: r.name, flipped: r.flip !== (i === 1) }; }
-    }
+    const d = mirror ? this.effDir(direction, size) : direction;
+    for (const n of [`${pre}_sd_${d}`, `${pre}_sd`]) { const r = this.resolve(n); if (r) return { name: r.name, flipped: r.flip }; }
     return null;
   }
 
@@ -217,38 +237,34 @@ export class Furni {
 
   /**
    * Item-level description of what a rotation shows, as { dir, flipped, kind } or null when there is no sprite:
-   *  single - the item has only one rotation: every rotation shows it, never flipped
-   *  native - the bundle has a real sprite for exactly this direction
-   *  alias  - the client's alias table maps this direction to another one (flipped when flip=1: 6 <- 0, 4 <- 2)
-   *  mirror - no entry at all: the pair partner ((6-d)%8) flipped horizontally (fallback)
+   *  native   - a real sprite for exactly this direction
+   *  alias    - an alias entry maps this direction to another one's sprite (flipped when marked: 6 <- 0, 4 <- 2 ...)
+   *  fallback - no entry for this direction: the client shows direction 0 (or the next direction that exists)
+   *  single   - like fallback, for an item that only has one direction at all
+   * With mirror=false only exact entries count (no fallback).
    */
   resolveDirection(direction, size = 64, mirror = true) {
-    direction = this.effDir(direction);
     const dirs = this.directions(size);
     if (!dirs.length) return null;
-    if (dirs.length === 1 && !this.isWall) return { dir: dirs[0], flipped: false, kind: 'single' };
-    if (dirs.includes(direction)) {
-      const e = this.layers.map((L) => this.#entry(L, direction, 0, size)).find(Boolean) ?? null;
-      return { dir: direction, flipped: !!e?.flip, kind: e?.flip ? 'alias' : 'native' };
-    }
-    const md = (((6 - direction) % 8) + 8) % 8;
-    if (mirror && md !== direction && dirs.includes(md)) return { dir: md, flipped: true, kind: 'mirror' };
-    return null;
+    const r = mirror ? this.#search(direction, size) : null;
+    const sd = r ? r.sprite : this.isWall ? this.effDir(direction) : direction;
+    const L = this.layers.find((x) => this.#entry(x, sd, 0, size));
+    if (!L) return null;
+    const e = this.#entry(L, sd, 0, size);
+    const exact = sd === direction || this.isWall;
+    const kind = !exact ? (dirs.length === 1 ? 'single' : 'fallback') : e?.flip ? 'alias' : 'native';
+    return { dir: sd, flipped: !!e?.flip, kind };
   }
 
-  /** -> { name, flipped } or null. Fallbacks: exact (incl. alias flips) -> mirrored direction -> frame 0. Single-rotation items ignore the rotation. */
+  /** -> { name, flipped } or null. The direction is searched like the client does; for other layers: that direction, else direction 0, else the layer is skipped. */
   sprite(layer, direction, frame, size = 64, mirror = true, variant = null) {
     const t = this.#tbls(variant)[size].get(layer);
     if (!t) return null;
-    direction = this.effDir(direction);
-    const dirs = this.directions(size);
-    if (dirs.length === 1 && !this.isWall) direction = dirs[0];
+    const r = mirror ? this.#search(direction, size, variant) : { sprite: this.isWall ? this.effDir(direction) : direction };
+    if (!r) return null;
     for (const fr of frame ? [frame, 0] : [0]) {
-      let e = t.get(k(direction, fr));
+      const e = t.get(k(r.sprite, fr)) ?? (mirror ? t.get(k(0, fr)) : null);
       if (e) return { name: e.name, flipped: e.flip };
-      const md = (((6 - direction) % 8) + 8) % 8;
-      e = mirror && md !== direction ? t.get(k(md, fr)) : null;
-      if (e) return { name: e.name, flipped: !e.flip };
     }
     return null;
   }

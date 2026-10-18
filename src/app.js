@@ -143,7 +143,7 @@ export async function buildApp({ logger = false } = {}) {
     const size = int(q, 'size', 64, 1, 1000);
     const direction = int(q, 'direction', 2, 0, 7), state = q.state === undefined ? null : int(q, 'state', null, 0, 9999);
     const frame = int(q, 'frame', 0, 0, 999);
-    const parts = await R.layout(furni, { direction, variant, size, ...(state === null ? { frame } : { step: stepAt(furni, state, frame) }), outliers: 'hide' });
+    const parts = await R.layout(furni, { direction, variant, size, shadow: bool(q, 'shadow', false), ...(state === null ? { frame } : { step: stepAt(furni, state, frame) }), outliers: 'hide' });
     return {
       class: furni.cls, requested_direction: direction, resolved: parts.res,
       fields: Object.fromEntries(Object.keys(furni.meta.fields).map((n) => [n, fs.readFileSync(path.join(furni.dir, furni.meta.fields[n]), 'utf8').slice(0, 4000)])),

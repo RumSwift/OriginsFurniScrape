@@ -94,8 +94,8 @@
       const p = { ...base, direction: d };
       if (firstState !== null) p.state = firstState;
       const wl = info.wall ? (d === 2 ? 'leftwall' : 'rightwall') : null;
-      const label = wl ? `${wl}${r.flipped ? ' (client flip)' : ''}` : r.kind === 'native' ? `dir ${d}` : r.kind === 'single' ? `dir ${d} (only sprite)` : r.kind === 'alias' ? `dir ${d}${r.flipped ? ' (client flip)' : ' (alias)'}` : `dir ${d} (flip of ${r.dir})`;
-      dirCell.append(fig(cls, label, p, r.flipped && r.kind !== 'native'));
+      const label = wl ? `${wl}${r.flipped ? ' (client flip)' : ''}` : r.kind === 'native' ? `dir ${d}` : r.kind === 'single' ? `dir ${d} (only sprite)` : r.kind === 'alias' ? `dir ${d}${r.flipped ? ' (client flip)' : ' (alias)'}` : `dir ${d} (shows dir ${r.dir}${r.flipped ? ', flipped' : ''})`;
+      dirCell.append(fig(cls, label, p, r.flipped || r.kind === 'fallback'));
     }
 
     // states / animation

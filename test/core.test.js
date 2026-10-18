@@ -111,6 +111,9 @@ async function makeFixtures() {
   addBundle(index, 'dlp', dl);
   // gat: divider/gate. frame 0 = closed, 1 = open
   addBundle(index, 'gat', [['gat_a_0_1_1_0_0', red, [2, 4]], ['gat_a_0_1_1_0_1', blue, [2, 4]]]);
+  // fl2: flips only in the bundle's own alias index (trailing *); dir 4 = flipped dir 2; shadow sd_2 plain alias, sd_4 flipped alias
+  addBundle(index, 'fl2', [['fl2_a_0_1_1_2_0', asym, [1, 4]], ['fl2_sd_0', shadow, [3, 4]]],
+    { 'memberalias.index': 'fl2_a_0_1_1_4_0=fl2_a_0_1_1_2_0*\rfl2_sd_2=fl2_sd_0\rfl2_sd_4=fl2_sd_0*' });
   // wal: wall furniture. rightwall is a real sprite, leftwall a flipped alias; its .props lives in another bundle (shr) behind the alias table
   addBundle(index, 'wal', [['rightwall wal_a_0', asym, [2, 4]]]);
   addBundle(index, 'shr', [], { 'shr.props': '[a: [ink: 33, locshift: [point(0,0), point(0,0), point(0,0), point(0,0), point(5,0)]]]' });
@@ -123,9 +126,9 @@ const px = (d, x, y) => [...d.data.subarray((y * d.width + x) * 4, (y * d.width 
 test('sync from a local source', async () => {
   await makeFixtures();
   const st = await sync.run();
-  assert.equal(st.downloaded, 11); assert.equal(st.failed, 0);
+  assert.equal(st.downloaded, 12); assert.equal(st.failed, 0);
   assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'furni/tst/sprites/tst_a_0_1_1_2_0.png')));
-  assert.equal((await sync.run()).skipped, 11); // second run is a no-op
+  assert.equal((await sync.run()).skipped, 12); // second run is a no-op
 });
 
 test('API: info, layering, colour, animation, validation', async () => {
@@ -135,8 +138,8 @@ test('API: info, layering, colour, animation, validation', async () => {
     assert.deepEqual(info.layers, ['a', 'b']);
     assert.deepEqual(info.directions, [0, 2]);
     assert.deepEqual(info.states, [0, 1]);
-    assert.equal(info.rotations[64][4].kind, 'mirror');
-    assert.equal((await app.inject('/furni/new?days=1')).json().count, 11);
+    assert.equal(info.rotations[64][4].kind, 'fallback'); // no entry for 4: the client shows direction 0
+    assert.equal((await app.inject('/furni/new?days=1')).json().count, 12);
 
     const r = await app.inject('/render/tst?direction=2');
     assert.equal(r.statusCode, 200);
@@ -161,25 +164,40 @@ test('API: info, layering, colour, animation, validation', async () => {
   } finally { await app.close(); }
 });
 
-test('rotations: 6 mirrors 0 and 4 mirrors 2 (whole item incl. shadow); single-sprite items always show their one sprite', async () => {
+test('rotations follow the client: missing direction -> direction 0; single-sprite items always show their one sprite', async () => {
   const app = await buildApp();
   try {
-    const d2 = decode((await app.inject('/render/tst?direction=2&shadow=1')).rawPayload);
-    const r4 = await app.inject('/render/tst?direction=4&shadow=1');
-    const d4 = decode(r4.rawPayload);
-    assert.equal(r4.headers['x-direction-used'], '2f:mirror');
-    assert.deepEqual([d4.width, d4.height], [d2.width, d2.height]);
-    assert.ok(flipRows(d2).equals(d4.data), 'mirrored render must be an exact flip, shadow included');
-    assert.equal((await app.inject('/render/tst?direction=6')).headers['x-direction-used'], '0f:mirror');
-    // no partner sprite and mirroring off -> nothing to draw
+    const d0 = decode((await app.inject('/render/tst?direction=0&shadow=1')).rawPayload);
+    for (const dir of [4, 6]) {
+      const r = await app.inject(`/render/tst?direction=${dir}&shadow=1`);
+      assert.equal(r.headers['x-direction-used'], '0:fallback', `dir ${dir}`);
+      assert.ok(decode(r.rawPayload).data.equals(d0.data), `dir ${dir} shows direction 0 unflipped`);
+    }
+    // exact only (mirror=0): nothing to draw for a missing direction
     assert.equal((await app.inject('/render/tst?direction=4&mirror=0')).statusCode, 404);
-    // solo has a single sprite (dir 0): every rotation shows exactly that, unflipped
     const base = decode((await app.inject('/render/solo?direction=0&shadow=1')).rawPayload);
     for (const dir of [2, 4, 6]) {
       const r = await app.inject(`/render/solo?direction=${dir}&shadow=1`);
       assert.equal(r.headers['x-direction-used'], '0:single', `dir ${dir}`);
       assert.ok(decode(r.rawPayload).data.equals(base.data), `dir ${dir} pixels`);
     }
+  } finally { await app.close(); }
+});
+
+test('bundle alias index: trailing * flips; flipped sprites and shadows get the one-tile shift', async () => {
+  const app = await buildApp();
+  try {
+    const info = (await app.inject('/furni/fl2')).json();
+    assert.deepEqual(info.rotations[64][4], { dir: 4, flipped: true, kind: 'alias' }); // fl2_a_..._4_0 = fl2_a_..._2_0*
+    assert.deepEqual(info.rotations[64][2], { dir: 2, flipped: false, kind: 'native' });
+    const off = async (dir) => (await app.inject(`/furni/fl2/layers?direction=${dir}&shadow=1`)).json().layers;
+    const n = await off(2), f = await off(4);
+    // sprite 4 wide, regPoint x 1: native left edge -1; flipped: rx - w + 64 = 1 - 4 + 64
+    assert.equal(n.find((l) => l.layer === 'a').offset[0], -1);
+    assert.equal(f.find((l) => l.layer === 'a').offset[0], 1 - 4 + 64);
+    // shadow: sd_2 is a plain alias (not flipped), sd_4 an alias with * (flipped + shifted)
+    assert.equal(n.find((l) => l.layer === 'shadow').offset[0], -3);
+    assert.equal(f.find((l) => l.layer === 'shadow').offset[0], 3 - 4 + 64);
   } finally { await app.close(); }
 });
 

@@ -140,13 +140,13 @@ export async function layout(furni, { direction = 2, variant = null, step = null
     let im = prepare(await loadPng(m.path), { ink, color: colors[li] ?? null, blend: num(ov?.blend, num(props.blend, 100)), matte });
     const [rx, ry] = m.regPoint;
     let x = -rx;
-    if (pick.flipped) { im = flipX(im); x = rx - im.width; }
-    const [sx, sy] = furni.locshift(layer, furni.effDir(direction)); // `locshift` from .props
+    if (pick.flipped) { im = flipX(im); x = rx - im.width + (furni.isWall ? 0 : size); } // client: flipped sprites are shifted right by one tile width
+    const [sx, sy] = furni.locshift(layer, furni.effDir(direction, size, variant)); // `locshift` from .props
     x += sx;
     const t = tight(im);
     if (!t.vis) return; // nothing to draw
     // client draw order: the layer's zshift for this direction plus its position in the layer list (ties keep layer order)
-    items.push({ z: zshift(props, furni.effDir(direction)) + (li - 5), li, layer, member: pick.name, ink, img: im, x, y: -ry + sy, vis: t.vis, flipped: pick.flipped,
+    items.push({ z: zshift(props, furni.effDir(direction, size, variant)) + (li - 5), li, layer, member: pick.name, ink, img: im, x, y: -ry + sy, vis: t.vis, flipped: pick.flipped,
       box: [x + t.minx, -ry + sy + t.miny, x + t.maxx + 1, -ry + sy + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
   }));
   const big = items.filter((i) => i.vis >= OUTLIER_MAX_PIXELS);
@@ -160,9 +160,7 @@ export async function layout(furni, { direction = 2, variant = null, step = null
     let im = prepare(await loadPng(m.path), { ink: 8, blend: Math.trunc(SHADOW_ALPHA * 100), matte });
     const [rx, ry] = m.regPoint;
     let x = -rx;
-    // a per-direction shadow already carries its own orientation; the single `_sd` follows the item
-    const flipped = sd.flipped || (sd.name.endsWith('_sd') && items.slice().sort((a, b) => a.li - b.li)[0].flipped);
-    if (flipped) { im = flipX(im); x = rx - im.width; }
+    if (sd.flipped) { im = flipX(im); x = rx - im.width + size; } // same tile-width shift as every flipped sprite
     items.push({ z: -10000, li: -1, layer: 'shadow', member: sd.name, ink: 8, img: im, x, y: -ry, vis: tight(im).vis, box: null, mode: 'normal', outlier: false });
   }
   items.sort((a, b) => a.z - b.z || a.li - b.li);
