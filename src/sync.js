@@ -123,9 +123,19 @@ export async function unpack(data, bundle, info, destRoot) {
         const idx = findAsset(`/bitmap/${bid}/idx`);
         if (idx) fs.writeFileSync(path.join(tmp, 'idx', `${fn}.idx`), idx);
       }
+      // The client ships pre-baked ink images per member (files.ink: {"8": ..., "36": ...}). Ink 8 is always "every exactly-white
+      // pixel transparent" (ink8AlphaPolicy), which the renderer reproduces; ink 36 (background transparent) works on the palette
+      // index and can differ from plain white keying, so that one is kept.
+      const ref = bm.files?.ink?.['36'];
+      const ink36 = (typeof ref === 'string' && assets.get(ref.replace(/^packed:/, ''))) || findAsset(`/bitmap/${bid}/ink36`);
+      let ink36File = null;
+      if (ink36) {
+        try { decodePng(ink36); ink36File = `sprites/${fn}.ink36.png`; fs.writeFileSync(path.join(tmp, ink36File), ink36); } catch { /* ignore a bad optional asset */ }
+      }
       const rp = bm.regPoint ?? [0, 0];
       meta.members[name] = { file: `sprites/${fn}.png`, regPoint: [Math.trunc(rp[0]), Math.trunc(rp[1])],
-        width: Math.trunc(bm.width ?? 0), height: Math.trunc(bm.height ?? 0), palette: bm.paletteName ?? null };
+        width: Math.trunc(bm.width ?? 0), height: Math.trunc(bm.height ?? 0), palette: bm.paletteName ?? null,
+        bitDepth: typeof bm.bitDepth === 'number' ? bm.bitDepth : null, ink8: bm.ink8AlphaPolicy ?? null, ...(ink36File ? { ink36: ink36File } : {}) };
     }
     for (const fm of members.fields ?? []) {
       const name = String(fm.name);
@@ -244,6 +254,9 @@ export async function reunpackAll() {
       ok++;
     } catch (e) { failed++; log('error', `reunpack ${r.name}: ${e.message}`); }
   }
+  // rendered images are keyed by bundle revision, which a re-unpack does not change: drop them so nothing stale is served
+  fs.rmSync(config.CACHE_DIR, { recursive: true, force: true });
+  fs.mkdirSync(config.CACHE_DIR, { recursive: true });
   hooks.onFinished();
   return { ok, failed };
 }

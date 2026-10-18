@@ -31,15 +31,28 @@ Run one replica only (sqlite + the in-process scheduler).
 - `GET /render/{class}/sheet`, `GET /furni/{class}/icon`, static `/assets/<bundle>/sprites/...`
 - `POST /admin/sync?force=1`, `GET /admin/status` with `Authorization: Bearer $ADMIN_TOKEN`
 
-## Caveats (unverified; please check against the client)
-- Missing directions fall back to the mirrored one `(6-d)%8`; disable with `mirror=0`.
-- Layer ordering uses the sign convention positive z-shift = in front.
-- Background removal defaults to an edge flood-fill (`matte=edge`); `matte=exact` strips only pure white.
-- Colour variants multiply grey parts by the colour; `class*N` needs `FURNIDATA_URL`.
-- Animation timing is a flat `fps`; the client's real timing isn't decoded.
-- `data/` holds client data decoded from the game's runtime pack: `furniture-aliases.json` (the flip table: dir 4/6 are flipped aliases of 2/0) and
-  `classmap.json` (which behaviour script a class runs). Animation follows the client scripts: barrier glow blinks 20 ticks on / 26 off, gates are
-  closed=0 / open=1, lamps / dragon lamp / fan switch on=1 (the dragon lamp and fan cycle a layer). One tick = one client frame = 1/15 s.
-  Unverified: ink 40/41 formulas, sprite 5 = layer `e` for the barrier, `.data` `random`/`sequences` (first sequence used), the real update rate.
-- Only the `ads_goldtabl` bundle was tested against real data (2 directions, no states); animation and mirroring are covered by synthetic tests. Multi-direction and animated real items are the real test.
+## How rendering follows the client
+Floor items go through `src/client.js`, a transcription of the client's Lingo (Active Object Class, Active Object Extension Class and the
+Divider / Lamp / DragonLamp / Fan / Barrier scripts):
+- Direction search on layer `a`: the requested direction, else direction 0, else the next direction up (placeholder past 7). Other layers: the
+  object's direction, else direction 0. The sprite list stops at the first missing layer letter.
+- Flips come from the alias tables (`data/furniture-aliases.json` and the bundle's `memberalias.index`, `*` = flipped). Flipped sprites and
+  shadows mirror around the regPoint and move one tile (`pXFactor`) right. Draw order = `zshift[dir] + (sprite number - 6)`; `locshift` per direction.
+- Classes with a `.data` member and no script of their own run the extension engine: data layer *i* (sorted) drives sprite *i* with
+  `<class>_<L>_0_<x>_<y>_<dir>_<frame>`, exact direction, no fallback (so a `.data` item has nothing to draw in a direction it has no sprites for).
+  State ids are the `.data` values (server stuffdata + 1). `loop`, `delay`, `blend`, `random` and `sequences` are simulated (random draws are seeded).
+- Behaviour scripts change frames by renaming the sprite's current member (its flip and position stay); the divider first tries
+  `<...>_<dir>_1` (fresh flip, no locshift); the lamp re-derives `b`/`c` from layer `a`'s member and puts them 2 / 4 above it.
+- Inks: 8 (matte) and 41/40 make every exactly-white pixel transparent (the client's `exact-white-transparent` policy); 36 uses the bundle's
+  pre-baked ink-36 alpha when present; 41 is a colour filter (pixels times the part colour) drawn normally; 33/34 add, 35/38 subtract,
+  37 max, 39 min. `matte=edge` / `matte=exact` override this.
+- Shadow: `<class>_sd_<dir>` else `<class>_sd`, at 30% (private rooms draw shadows through the shadow manager at blend 30).
+- The gallery shows the rotations the client can turn to (where layer `a` has a member); tick "Also show rotations..." for the rest.
+- Wall items: leftwall = 2, rightwall = 4, no tile shift.
+- A re-unpack (`POST /admin/reunpack`) also clears the render cache.
+
+## Caveats
+- Colour variants multiply the part by the colour; `class*N` needs `FURNIDATA_URL`.
+- Scripts other than the five above (plants, fridges, TVs, trophies ...) are not emulated; their states are guessed from sprite frames (`states_inferred`).
+- Ink 40 (lighten) is treated like 41; no furniture in the client's ink table uses it.
 - Download politeness: my automated fetch of the index host was refused under its robots rules, so confirm an acceptable rate with Sulake. Defaults: 2 workers, 0.3 s delay, backoff, stops on 401/403 or repeated failures.

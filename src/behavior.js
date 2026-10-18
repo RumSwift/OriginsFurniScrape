@@ -2,6 +2,7 @@
 // A timeline is { steps: [{ ticks, layers: { <letter>: { frame?, visible?, blend? } } }], finite, source }.
 // One tick = one client frame (the client movie runs at 15 fps, so TICKS_PER_SECOND = 15).
 import { classChain } from './aliasdb.js';
+import { extensionTimeline } from './client.js';
 
 export const TICKS_PER_SECOND = 15;
 
@@ -60,64 +61,16 @@ export function behaviorOf(cls) {
 
 export const behaviorStates = (name) => BEHAVIORS[name]?.states ?? null;
 
-// ---------------------------------------------------------------- generic `.data` engine
 /**
- * Simulates the client's Active Object Extension update loop for one state: per layer a frame list advances every `delay` ticks;
- * `loop` counts passes (absent = once, 0 = forever); a finished layer holds its last frame.
- * Not modelled: #random frame order and #sequences (the first sequence is used).
+ * -> timeline for a state. state === null -> a single empty step (the default pose).
+ * Behaviour scripts use their own timelines; `.data` items run the Active Object Extension update loop (client.js);
+ * anything else: the state number is taken as the sprite frame (a guess, marked states_inferred).
  */
-function dataTimeline(furni, state, maxSteps = 96) {
-  const L = [];
-  for (const layer of furni.layers) {
-    const a = furni.layerAnim(layer, state);
-    if (!a) continue;
-    L.push({ layer, frames: a.frames, delay: a.delay, blend: a.blend, n: 1, rep: 1, lc: a.loop === null ? 1 : a.loop - 1, on: true });
-  }
-  if (!L.length) return single({}, 'static');
-  const sig = () => L.map((s) => `${s.n},${s.rep},${s.lc},${s.on ? 1 : 0}`).join('|');
-  const shot = () => Object.fromEntries(L.map((s) => {
-    const o = { frame: s.frames[s.n - 1] };
-    if (s.blend && s.blend.length >= s.n) o.blend = s.blend[s.n - 1];
-    return [s.layer, o];
-  }));
-  const seen = new Map(), snaps = [];
-  let finite = false;
-  for (let t = 0; t < 4000; t++) {
-    const key = sig();
-    if (seen.has(key)) { snaps.splice(0, seen.get(key)); break; }
-    seen.set(key, t);
-    snaps.push(shot());
-    if (!L.some((s) => s.on)) { finite = true; break; }
-    for (const s of L) {
-      if (!s.on) continue;
-      if (s.rep >= s.delay) {
-        let go = 1;
-        const len = s.frames.length;
-        if (s.n === len) {
-          if (s.lc > 0) s.lc--;
-          go = s.lc;
-          if (s.lc === 0) s.on = false;
-        }
-        if (s.n < len || go) s.n = (s.n % len) + 1;
-        s.rep = 1;
-      } else s.rep++;
-    }
-  }
-  const steps = [];
-  for (const snap of snaps) {
-    const last = steps[steps.length - 1];
-    if (last && JSON.stringify(last.layers) === JSON.stringify(snap)) last.ticks++;
-    else steps.push({ ticks: 1, layers: snap });
-  }
-  if (finite && steps.length) steps[steps.length - 1].ticks += TICKS_PER_SECOND; // hold the final pose a moment before the GIF restarts
-  return { steps: steps.slice(0, maxSteps), finite, source: '.data' };
-}
-
-/** -> timeline for a state. state === null -> a single empty step (every layer at its default frame). */
 export function timeline(furni, state) {
   if (state === null) return single({}, 'none');
   if (furni.behavior) return BEHAVIORS[furni.behavior].timeline(state, furni);
-  return dataTimeline(furni, state);
+  if (furni.mode === 'extension') return extensionTimeline(furni.dataModelFor(64), state, { cls: furni.cls });
+  return single(same(furni.layers, { frame: state }), 'inferred');
 }
 
 /** The step shown for index `i` (wraps). */

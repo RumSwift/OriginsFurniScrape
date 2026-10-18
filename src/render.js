@@ -6,17 +6,21 @@ import gifenc from 'gifenc';
 import pngjs from 'pngjs';
 import { paletteColor } from './aliasdb.js';
 import { TICKS_PER_SECOND, timeline } from './behavior.js';
+import { extensionTimeline, solve } from './client.js';
 
 const { PNG } = pngjs;
 const { GIFEncoder, quantize, applyPalette } = gifenc;
 
-export const SHADOW_ALPHA = 0.2; // the client draws the shadow sprite at 20% blend
+// Private rooms (where furniture lives) draw every shadow through the shadow manager: one layer at blend 30.
+// (Public-room shadow sprites use 20%, or the class's "sd" blend.)
+export const SHADOW_ALPHA = 0.3;
 /** Bump when output changes, so cached renders are not served stale. */
-export const RENDER_VERSION = 6;
+export const RENDER_VERSION = 7;
 
-// Director ink numbers -> blend operator. 33/34 add, 35/38 subtract, 37 lightest, 39 darkest are standard Director.
-// 40 (lighten) and 41 (darken) exist in the client's ink table; the exact formulas are NOT verified (screen / multiply guessed).
-const INK_MODE = { 33: 'add', 34: 'add', 35: 'sub', 38: 'sub', 37: 'lightest', 39: 'darkest', 40: 'screen', 41: 'multiply' };
+// Director ink numbers -> how the client's renderer combines a sprite with what is below it.
+// 41 darken / 40 lighten are colour-filter inks: the sprite's own pixels times its bgColor (the part colour), drawn normally
+// (the client's sprite shader: rgb * tint). 33/34 add, 35/38 subtract, 37 lightest (max), 39 darkest (min) work on the backdrop.
+const INK_MODE = { 33: 'add', 34: 'add', 35: 'sub', 38: 'sub', 37: 'lightest', 39: 'darkest' };
 export const inkMode = (ink) => INK_MODE[ink] ?? 'normal';
 
 /**
@@ -78,17 +82,27 @@ function edgeMatte(img) {
   return a;
 }
 
-export function prepare(img, { ink = 8, color = null, blend = 100, matte = 'edge' } = {}) {
+/**
+ * Transparency + colour for one sprite, as the client does it:
+ *  ink 8 (matte), 41/40 (darken/lighten, matted like 8): every exactly-white pixel is transparent ("exact-white-transparent",
+ *    the policy the client's pre-baked ink-8 images use; 32-bit members only use their alpha channel);
+ *  ink 36 (background transparent): the client's pre-baked ink-36 alpha when the bundle has one, else exact white;
+ *  ink 0 (copy): opaque; other inks (add, subtract, ...): the image as is.
+ * `color` (part colour / bgColor) multiplies the pixels. matte='edge' = only white connected to the border (old heuristic).
+ */
+export function prepare(img, { ink = 8, color = null, blend = 100, matte = 'client', ink36 = null, depth32 = false } = {}) {
   const n = img.width * img.height, src = img.data, out = Buffer.from(src);
-  let alpha;
-  if (ink === 36) alpha = whiteMask(img).map((v) => (v ? 0 : 255));
-  else if (ink === 0) alpha = new Uint8Array(n).fill(255);
-  else alpha = matte === 'edge' ? edgeMatte(img) : whiteMask(img).map((v) => (v ? 0 : 255));
+  let alpha = null;
+  const white = () => whiteMask(img).map((v) => (v ? 0 : 255));
+  if (matte === 'edge') alpha = ink === 0 ? null : ink === 36 ? white() : edgeMatte(img);
+  else if (matte === 'exact') alpha = ink === 0 ? null : white();
+  else if (ink === 36) alpha = ink36 && ink36.width === img.width && ink36.height === img.height ? Uint8Array.from({ length: n }, (_, i) => ink36.data[i * 4 + 3]) : white();
+  else if (ink === 8 || ink === 41 || ink === 40) alpha = depth32 ? null : white();
   const tint = color && !(color[0] === 255 && color[1] === 255 && color[2] === 255);
   for (let i = 0; i < n; i++) {
     const o = i * 4;
     if (tint) for (let c = 0; c < 3; c++) out[o + c] = Math.round((src[o + c] * color[c]) / 255);
-    let a = Math.round((src[o + 3] * alpha[i]) / 255);
+    let a = ink === 0 ? 255 : alpha ? Math.round((src[o + 3] * alpha[i]) / 255) : src[o + 3];
     if (blend < 100) a = Math.floor((a * blend) / 100);
     out[o + 3] = a;
   }
@@ -121,48 +135,93 @@ function tight(img) {
 const OUTLIER_MAX_PIXELS = 64, OUTLIER_MIN_GAP = 60;
 const gap = (a, b) => Math.max(a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3], 0);
 
+async function memberImage(furni, name, { ink, color, blend, matte }) {
+  const m = furni.member(name);
+  if (!m) return null;
+  let ink36 = null;
+  if (ink === 36 && m.ink36) { try { ink36 = await loadPng(m.path.replace(/\.png$/, '.ink36.png')); } catch { ink36 = null; } }
+  return { m, img: prepare(await loadPng(m.path), { ink, color, blend, matte, ink36, depth32: m.bitDepth === 32 && !m.ink8 }) };
+}
+
 /**
  * -> [{ img, x, y, mode, layer, member, ... }] relative to the tile origin, in draw order.
  * The array carries `.all` (every layer incl. dropped ones, with flags), `.res` (item-level rotation info) and `.dropped` (layer letters).
- * Layers with no visible pixels are skipped. With outliers='hide' (default) a tiny sprite (<64 visible px) lying >60px away from
- * the rest of the item is dropped: those are scripted-effect anchors / hidden-state markers, not part of the picture.
+ * Floor items go through the client emulation (client.js); wall items use their two orientations.
+ * With outliers='hide' (default) a tiny sprite (<64 visible px) lying >60px away from the rest is dropped: scripted-effect anchors.
  */
-export async function layout(furni, { direction = 2, variant = null, step = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', outliers = 'hide' } = {}) {
+export async function layout(furni, { direction = 2, variant = null, step = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'client', inks = 'client', outliers = 'hide' } = {}) {
+  if (furni.isWall) return wallLayout(furni, { direction, variant, step, frame, size, colors, mirror, matte, inks, outliers });
+  const items = [];
+  if (!step && furni.mode === 'extension' && !frame) step = extensionTimeline(furni.dataModelFor(size), 1, { cls: furni.cls }).steps[0]; // stuffdata "" -> state 1
+  const sol = solve(furni, { direction, size, step, frame, exact: !mirror });
+  if (!sol) return Object.assign([], { all: [], res: null, dropped: [] });
+  const XF = size; // the room geometry's pXFactor: 64 or 32
+  const effDir = sol.dir;
+  for (const sp of sol.sprites) {
+    if (!sp.visible || !sp.name) continue;
+    const got = await memberImage(furni, sp.name, { ink: sp.ink, color: sp.color === null ? null : colors[sp.color] ?? null, blend: sp.blend, matte });
+    if (!got) continue;
+    let { img: im } = got;
+    const [rx, ry] = got.m.regPoint;
+    // Director: a sprite shows its member with the regPoint on the sprite's loc. Flipped sprites (rotation 180 + skew 180) mirror around
+    // that point, and the client moves them one tile (pXFactor) right.
+    let x = -rx;
+    if (sp.flip) { im = flipX(im); x = rx - im.width + XF; }
+    const [sx, sy] = sp.reloc ? furni.locshift(sp.layer, effDir) : [0, 0];
+    x += sx;
+    const y = -ry + sy;
+    const t = tight(im);
+    if (!t.vis) continue;
+    items.push({ z: sp.z, li: sp.idx, layer: sp.layer, member: sp.name, ink: sp.ink, img: im, x, y, vis: t.vis, flipped: sp.flip,
+      box: [x + t.minx, y + t.miny, x + t.maxx + 1, y + t.maxy + 1], mode: inks === 'client' ? inkMode(sp.ink) : 'normal', outlier: false });
+  }
+  markOutliers(items);
+  if (shadow && items.length && sol.shadow) {
+    const got = await memberImage(furni, sol.shadow.name, { ink: 8, color: null, blend: Math.round(SHADOW_ALPHA * 100), matte });
+    if (got) {
+      let { img: im } = got;
+      const [rx, ry] = got.m.regPoint;
+      let x = -rx;
+      if (sol.shadow.flip) { im = flipX(im); x = rx - im.width + XF; }
+      items.push({ z: -1e9, li: -1, layer: 'shadow', member: sol.shadow.name, ink: 8, img: im, x, y: -ry, vis: tight(im).vis, box: null, mode: 'normal', outlier: false });
+    }
+  }
+  items.sort((a, b) => a.z - b.z || a.li - b.li);
+  const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
+  return Object.assign(keep, { all: items, res: furni.resolveDirection(direction, size, mirror), dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
+}
+
+function markOutliers(items) {
+  const big = items.filter((i) => i.vis >= OUTLIER_MAX_PIXELS);
+  if (!big.length) return;
+  const main = [Math.min(...big.map((i) => i.box[0])), Math.min(...big.map((i) => i.box[1])), Math.max(...big.map((i) => i.box[2])), Math.max(...big.map((i) => i.box[3]))];
+  for (const i of items) if (i.vis < OUTLIER_MAX_PIXELS && gap(i.box, main) > OUTLIER_MIN_GAP) i.outlier = true;
+}
+
+/** Wall items (Item Object Class): leftwall = direction 2, rightwall = 4; layers in letter order with zshift. */
+async function wallLayout(furni, { direction, variant, step, frame, size, colors, mirror, matte, inks, outliers }) {
   const items = [];
   await Promise.all(furni.layers.map(async (layer, li) => {
     const ov = step?.layers?.[layer] ?? null;
     if (ov?.visible === false) return;
     const pick = furni.sprite(layer, direction, ov?.frame ?? frame, size, mirror, variant);
     if (!pick) return;
-    const m = furni.member(pick.name);
     const props = furni.layerProps(layer);
     const ink = num(props.ink, 8);
-    let im = prepare(await loadPng(m.path), { ink, color: colors[li] ?? null, blend: num(ov?.blend, num(props.blend, 100)), matte });
-    const [rx, ry] = m.regPoint;
+    const got = await memberImage(furni, pick.name, { ink, color: colors[li] ?? null, blend: num(ov?.blend, num(props.blend, 100)), matte });
+    if (!got) return;
+    let { img: im } = got;
+    const [rx, ry] = got.m.regPoint;
     let x = -rx;
-    if (pick.flipped) { im = flipX(im); x = rx - im.width + (furni.isWall ? 0 : size); } // client: flipped sprites are shifted right by one tile width
-    const [sx, sy] = furni.locshift(layer, furni.effDir(direction, size, variant)); // `locshift` from .props
+    if (pick.flipped) { im = flipX(im); x = rx - im.width; }
+    const [sx, sy] = furni.locshift(layer, furni.effDir(direction, size, variant));
     x += sx;
     const t = tight(im);
-    if (!t.vis) return; // nothing to draw
-    // client draw order: the layer's zshift for this direction plus its position in the layer list (ties keep layer order)
+    if (!t.vis) return;
     items.push({ z: zshift(props, furni.effDir(direction, size, variant)) + (li - 5), li, layer, member: pick.name, ink, img: im, x, y: -ry + sy, vis: t.vis, flipped: pick.flipped,
       box: [x + t.minx, -ry + sy + t.miny, x + t.maxx + 1, -ry + sy + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
   }));
-  const big = items.filter((i) => i.vis >= OUTLIER_MAX_PIXELS);
-  if (big.length) {
-    const main = [Math.min(...big.map((i) => i.box[0])), Math.min(...big.map((i) => i.box[1])), Math.max(...big.map((i) => i.box[2])), Math.max(...big.map((i) => i.box[3]))];
-    for (const i of items) if (i.vis < OUTLIER_MAX_PIXELS && gap(i.box, main) > OUTLIER_MIN_GAP) i.outlier = true;
-  }
-  const sd = shadow && items.length ? furni.shadowFor(direction, size, mirror) : null;
-  if (sd) {
-    const m = furni.member(sd.name);
-    let im = prepare(await loadPng(m.path), { ink: 8, blend: Math.trunc(SHADOW_ALPHA * 100), matte });
-    const [rx, ry] = m.regPoint;
-    let x = -rx;
-    if (sd.flipped) { im = flipX(im); x = rx - im.width + size; } // same tile-width shift as every flipped sprite
-    items.push({ z: -10000, li: -1, layer: 'shadow', member: sd.name, ink: 8, img: im, x, y: -ry, vis: tight(im).vis, box: null, mode: 'normal', outlier: false });
-  }
+  markOutliers(items);
   items.sort((a, b) => a.z - b.z || a.li - b.li);
   const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
   return Object.assign(keep, { all: items, res: furni.resolveDirection(direction, size, mirror), dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
@@ -178,8 +237,6 @@ const CH = {
   sub: (d, s) => Math.max(0, d - s),
   lightest: (d, s) => Math.max(d, s),
   darkest: (d, s) => Math.min(d, s),
-  screen: (d, s) => 255 - ((255 - d) * (255 - s)) / 255,
-  multiply: (d, s) => (d * s) / 255,
 };
 
 /**
@@ -191,7 +248,7 @@ function blendInto(out, d, sr, sg, sb, sa, mode) {
   const a = sa / 255, daN = out[d + 3] / 255, op = CH[mode];
   const maxc = Math.max(sr, sg, sb);
   let ue, ur, ug, ub;
-  if (mode === 'add' || mode === 'screen') {
+  if (mode === 'add') {
     if (!maxc && !daN) return;
     ue = (maxc / 255) * a; ur = (sr * 255) / (maxc || 1); ug = (sg * 255) / (maxc || 1); ub = (sb * 255) / (maxc || 1);
   } else if (mode === 'sub') { ue = (maxc / 255) * a; ur = ug = ub = 0; }
@@ -243,7 +300,7 @@ export async function render(furni, { pad = 0, bg = null, ...opts } = {}) {
 }
 
 /** Animation of a state: one image per timeline step, all on a shared canvas so nothing jitters. Each frame carries `ticks`. */
-export async function renderFrames(furni, { direction = 2, variant = null, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', outliers = 'hide', pad = 0, bg = null, maxFrames = 96 } = {}) {
+export async function renderFrames(furni, { direction = 2, variant = null, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'client', inks = 'client', outliers = 'hide', pad = 0, bg = null, maxFrames = 96 } = {}) {
   const steps = timeline(furni, state).steps.slice(0, maxFrames);
   const sets = [];
   for (const step of steps) sets.push(await layout(furni, { direction, variant, step, size, colors, shadow, mirror, matte, inks, outliers }));

@@ -7,6 +7,7 @@ import { LingoError, parse } from './lingo.js';
 import { safeFile } from './sync.js';
 import { aliasNamesFor, aliasOf, classChain, parseWallName, wallNamesFor } from './aliasdb.js';
 import { TICKS_PER_SECOND, behaviorOf, behaviorStates, timeline } from './behavior.js';
+import { dataModel, dataStates, solveBase } from './client.js';
 
 export const CLS_RE = /^[A-Za-z0-9][A-Za-z0-9_.*\-]{0,127}$/;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -64,8 +65,17 @@ export class Furni {
     this.ext = new Map(); // member name -> { dir, m } for sprites that live in another bundle
     this.props = this.#readLingo(`${cls}.props`, '.props');
     this.data = this.#readLingo(`${cls}.data`, '.data');
+    this.hasDataMember = this.#fieldText(`${cls}.data`) !== null || Object.keys(this.data).length > 0;
+    // the small (32px) visualisation reads s_<class>.props / s_<class>.data
+    this.sprops = this.#fieldText(`s_${cls}.props`) !== null ? this.#readLingo(`s_${cls}.props`, '.props') : this.props;
+    this.sdata = this.#fieldText(`s_${cls}.data`) !== null ? this.#readLingo(`s_${cls}.data`, '.data') : this.data;
     this.chain = classChain(cls);
     this.behavior = behaviorOf(cls);
+    // the client upgrades a class to Active Object Extension Class when it has a .data member and no script of its own
+    const plain = !this.chain.length || (this.chain.length === 1 && this.chain[0] === 'Active Object Class');
+    this.mode = this.behavior ? this.behavior
+      : this.hasDataMember && (plain || this.chain.some((c) => /Active Object Extension Class$/.test(c))) ? 'extension' : null;
+    this.dm = { 64: dataModel(this.data), 32: dataModel(this.sdata) };
     this.#index();
     const lc = this.meta.lighting?.classes ?? {};
     this.lighting = lc[cls] ?? lc[Object.keys(lc).find((k) => k.toLowerCase() === cls.toLowerCase())] ?? null;
@@ -208,16 +218,11 @@ export class Furni {
     return v && typeof v.x === 'number' && typeof v.y === 'number' ? [v.x, v.y] : [0, 0];
   }
 
-  /**
-   * Shadow sprite, as the client picks it: `<class>_sd_<direction>` if the bundle (or alias table) has it, else `<class>_sd`.
-   * -> { name, flipped } or null. Flipping comes only from alias entries.
-   */
+  /** Shadow sprite, as the client picks it (after its direction search): `<class>_sd_<direction>`, else `<class>_sd`. -> { name, flipped } or null. */
   shadowFor(direction, size = 64, mirror = true) {
     if (this.isWall) return null; // wall items have no floor shadow
-    const pre = size === 32 ? `s_${this.cls}` : this.cls;
-    const d = mirror ? this.effDir(direction, size) : direction;
-    for (const n of [`${pre}_sd_${d}`, `${pre}_sd`]) { const r = this.resolve(n); if (r) return { name: r.name, flipped: r.flip }; }
-    return null;
+    const b = solveBase(this, direction, size, { exact: !mirror });
+    return b?.shadow ? { name: b.shadow.name, flipped: b.shadow.flip } : null;
   }
 
   get hasShadow() { return !!(this.shadowFor(0, 64) || this.shadowFor(2, 64) || this.shadowFor(0, 32) || this.shadowFor(2, 32)); }
@@ -246,14 +251,19 @@ export class Furni {
   resolveDirection(direction, size = 64, mirror = true) {
     const dirs = this.directions(size);
     if (!dirs.length) return null;
-    const r = mirror ? this.#search(direction, size) : null;
-    const sd = r ? r.sprite : this.isWall ? this.effDir(direction) : direction;
-    const L = this.layers.find((x) => this.#entry(x, sd, 0, size));
-    if (!L) return null;
-    const e = this.#entry(L, sd, 0, size);
-    const exact = sd === direction || this.isWall;
-    const kind = !exact ? (dirs.length === 1 ? 'single' : 'fallback') : e?.flip ? 'alias' : 'native';
-    return { dir: sd, flipped: !!e?.flip, kind };
+    if (this.isWall) {
+      const sd = this.effDir(direction);
+      const L = this.layers.find((x) => this.#entry(x, sd, 0, size));
+      const e = L ? this.#entry(L, sd, 0, size) : null;
+      return e ? { dir: sd, flipped: !!e.flip, kind: e.flip ? 'alias' : 'native' } : null;
+    }
+    const b = solveBase(this, direction, size, { exact: !mirror });
+    if (!b) return null;
+    const a = b.sprites[0];
+    const shown = b.via === 'dir0' ? 0 : b.dir;
+    const exactHit = b.via === 'exact' && b.dir === direction;
+    const kind = exactHit ? (a.flip ? 'alias' : 'native') : dirs.length === 1 ? 'single' : 'fallback';
+    return { dir: shown, flipped: !!a.flip, kind };
   }
 
   /** -> { name, flipped } or null. The direction is searched like the client does; for other layers: that direction, else direction 0, else the layer is skipped. */
@@ -274,54 +284,34 @@ export class Furni {
     return [...new Set([...(this.sprites[64].get(layer)?.keys() ?? [])].map((x) => Number(x.split('_')[1])))].sort((a, b) => a - b);
   }
 
-  /** True when the item has no `.data` state table and the states below are guessed from its sprite frames. */
-  get statesInferred() { return !this.behavior && !Array.isArray(this.data.states) && this.#inferred().length > 0; }
+  /** True when the states below are a guess from sprite frames (no `.data`, no known behaviour script). */
+  get statesInferred() { return !this.mode && this.#inferred().length > 0; }
 
   #inferred() {
     const n = Math.max(0, ...this.layers.map((L) => this.frameSet(L).length));
     return n > 1 ? Array.from({ length: n }, (_, i) => i) : [];
   }
 
+  dataModelFor(size = 64) { return this.dm[size === 32 ? 32 : 64] ?? { letters: [], layers: new Map(), states: [], strings: [] }; }
+
+  propsFor(size = 64) {
+    const p = size === 32 ? this.sprops : this.props;
+    return isObj(p) ? p : {};
+  }
+
+  /** State ids: behaviour scripts 0/1 (stuffdata), `.data` state values (stuffdata + 1), else frame numbers guessed from sprites. */
   states() {
     if (this.behavior) return behaviorStates(this.behavior).map((x) => x.id);
-    const s = this.data.states;
-    return Array.isArray(s) ? s.map(Number) : this.#inferred();
+    if (this.mode === 'extension') return dataStates(this.dm[64]);
+    return this.#inferred();
   }
 
-  /** [{ id, label, animated }]: labels come from the client's behaviour scripts (barrier, gate/divider, lamps, fan); null otherwise. */
+  /** [{ id, label, animated }]: labels from behaviour scripts or `.data` statestrings. */
   stateList() {
     const labels = this.behavior ? new Map(behaviorStates(this.behavior).map((x) => [x.id, x.label])) : new Map();
-    return this.states().map((id) => ({ id, label: labels.get(id) ?? null, animated: timeline(this, id).steps.length > 1 }));
+    const strs = this.mode === 'extension' ? this.dm[64]?.strings ?? [] : [];
+    return this.states().map((id, i) => ({ id, label: labels.get(id) ?? (typeof strs[i] === 'string' ? strs[i] : null), animated: timeline(this, id).steps.length > 1 }));
   }
-
-  /**
-   * Animation of a layer in a state: { frames, delay, loop, blend } or null when the data does not describe it.
-   * From `.data` ([states:[..], layers:[a:[[frames:[..], delay:3, loop:0, blend:[..]], ...]]]); loop is null when absent (the client then
-   * plays it once, loop 0 = forever). Without `.data` the state number is taken as the sprite frame (an inference, e.g. a gate:
-   * frame 0 closed, frame 1 open) for layers that have that frame.
-   */
-  layerAnim(layer, state) {
-    if (!Array.isArray(this.data.states)) {
-      const have = this.frameSet(layer);
-      return this.statesInferred && have.includes(state) ? { frames: [state], delay: 1, loop: 0, blend: null } : null;
-    }
-    const sts = this.states();
-    const perLayer = this.data.layers?.[layer];
-    if (!sts.length || !Array.isArray(perLayer)) return null;
-    const i = sts.indexOf(state);
-    if (i < 0 || i >= perLayer.length) return null;
-    const e = isObj(perLayer[i]) ? perLayer[i] : null;
-    let fr = e?.frames;
-    if (!Array.isArray(fr) && Array.isArray(e?.sequences) && Array.isArray(e.sequences[0])) fr = e.sequences[0]; // approximation: first sequence
-    const frames = (Array.isArray(fr) ? fr : []).map((x) => (Array.isArray(x) ? (x.length ? Math.trunc(x[0]) : 0) : typeof x === 'number' ? Math.trunc(x) : 0));
-    if (!frames.length) return null;
-    return {
-      frames, delay: typeof e.delay === 'number' && e.delay >= 1 ? Math.trunc(e.delay) : 1, loop: typeof e.loop === 'number' ? Math.trunc(e.loop) : null,
-      blend: Array.isArray(e.blend) ? e.blend.map((v) => (typeof v === 'number' ? v : 100)) : null,
-    };
-  }
-
-  layerFrames(layer, state) { return this.layerAnim(layer, state)?.frames ?? null; }
 
   layerProps(layer) {
     const p = this.props[layer];
