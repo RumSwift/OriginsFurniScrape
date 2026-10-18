@@ -105,7 +105,7 @@ export async function buildApp({ logger = false } = {}) {
   app.get('/gallery', async (req, reply) => reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(galleryHtml));
 
   app.get('/healthz', async () => ({
-    ok: true, bundles: D.get("SELECT COUNT(*) c FROM bundles WHERE status='ok'").c, sync_running: sync.STATUS.running,
+    ok: true, render_version: R.RENDER_VERSION, bundles: D.get("SELECT COUNT(*) c FROM bundles WHERE status='ok'").c, sync_running: sync.STATUS.running,
   }));
 
   app.get('/furni', async (req) => {
