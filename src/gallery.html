@@ -1,177 +1,182 @@
 <!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Furni gallery</title>
-    <style>
-        :root { --bg:#14161a; --panel:#1c1f26; --line:#2a2e38; --fg:#e6e8ee; --mut:#8b92a3; --acc:#6aa7ff; --cell:#101216; }
-        @media (prefers-color-scheme: light) { :root { --bg:#f4f5f8; --panel:#fff; --line:#dfe2ea; --fg:#1c2030; --mut:#667085; --acc:#2a62d9; --cell:#eceef4; } }
-        * { box-sizing: border-box; }
-        body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-        header { position:sticky; top:0; z-index:5; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; }
-        header h1 { font-size:16px; margin:0 8px 0 0; }
-        label { color:var(--mut); display:flex; align-items:center; gap:6px; }
-        input[type=search], select { background:var(--cell); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
-        input[type=search] { width:220px; }
-        #count { color:var(--mut); margin-left:auto; }
-        main { padding:12px 16px 60px; max-width:1500px; margin:0 auto; }
-        .row { display:grid; grid-template-columns:220px minmax(0,1.4fr) minmax(0,1fr); gap:14px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:8px; min-height:96px; }
-        .row.hidden { display:none; }
-        .name { font-weight:600; word-break:break-all; }
-        .meta { color:var(--mut); font-size:12px; margin-top:4px; }
-        .meta a { color:var(--acc); text-decoration:none; }
-        .cell { display:flex; flex-wrap:wrap; gap:8px; align-content:flex-start; }
-        .cell h3 { flex-basis:100%; margin:0; font-size:11px; font-weight:600; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }
-        figure { margin:0; text-align:center; }
-        figure a { display:flex; align-items:flex-end; justify-content:center; min-width:48px; min-height:48px; border-radius:6px; background:var(--cell); padding:6px; }
-        figure img { display:block; image-rendering:pixelated; max-width:none; }
-        figcaption { font-size:11px; color:var(--mut); margin-top:3px; }
-        figcaption.mirror { color:#d9a441; }
-        body[data-bg=checker] figure a { background:conic-gradient(#8883 25%, transparent 0 50%, #8883 0 75%, transparent 0) 0 0/16px 16px, var(--cell); }
-        body[data-bg=white] figure a { background:#fff; }
-        body[data-bg=black] figure a { background:#000; }
-        .empty { color:var(--mut); font-style:italic; }
-        .err { color:#e5736b; }
-        @media (max-width:900px) { .row { grid-template-columns:1fr; } }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Furni gallery</title>
+<style>
+  :root { --bg:#14161a; --panel:#1c1f26; --line:#2a2e38; --fg:#e6e8ee; --mut:#8b92a3; --acc:#6aa7ff; --cell:#101216; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f4f5f8; --panel:#fff; --line:#dfe2ea; --fg:#1c2030; --mut:#667085; --acc:#2a62d9; --cell:#eceef4; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { position:sticky; top:0; z-index:5; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  label { color:var(--mut); display:flex; align-items:center; gap:6px; }
+  input[type=search], select { background:var(--cell); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  input[type=search] { width:220px; }
+  #count { color:var(--mut); margin-left:auto; }
+  main { padding:12px 16px 60px; max-width:1500px; margin:0 auto; }
+  .row { display:grid; grid-template-columns:220px minmax(0,1.4fr) minmax(0,1fr); gap:14px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:8px; min-height:96px; }
+  .row.hidden { display:none; }
+  .name { font-weight:600; word-break:break-all; }
+  .meta { color:var(--mut); font-size:12px; margin-top:4px; }
+  .meta a { color:var(--acc); text-decoration:none; }
+  .cell { display:flex; flex-wrap:wrap; gap:8px; align-content:flex-start; }
+  .cell h3 { flex-basis:100%; margin:0; font-size:11px; font-weight:600; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }
+  figure { margin:0; text-align:center; }
+  figure a { display:flex; align-items:flex-end; justify-content:center; min-width:48px; min-height:48px; border-radius:6px; background:var(--cell); padding:6px; }
+  figure img { display:block; image-rendering:pixelated; max-width:none; }
+  figcaption { font-size:11px; color:var(--mut); margin-top:3px; }
+  figcaption.mirror { color:#d9a441; }
+  body[data-bg=checker] figure a { background:conic-gradient(#8883 25%, transparent 0 50%, #8883 0 75%, transparent 0) 0 0/16px 16px, var(--cell); }
+  body[data-bg=white] figure a { background:#fff; }
+  body[data-bg=black] figure a { background:#000; }
+  .empty { color:var(--mut); font-style:italic; }
+  .err { color:#e5736b; }
+  @media (max-width:900px) { .row { grid-template-columns:1fr; } }
+</style>
 </head>
 <body data-bg="checker">
 <header>
-    <h1>Furni gallery</h1>
-    <input id="q" type="search" placeholder="Filter by name…" autocomplete="off">
-    <label>Size <select id="size"><option>64</option><option>32</option></select></label>
-    <label>Zoom <select id="scale"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
-    <label>Background <select id="bg"><option>checker</option><option>dark</option><option>white</option><option>black</option></select></label>
-    <label><input id="shadow" type="checkbox"> Shadow</label>
-    <label><input id="allrot" type="checkbox" checked> Show all 4 rotations (mirrored ones in amber)</label>
-    <span id="count">loading…</span>
+  <h1>Furni gallery</h1>
+  <input id="q" type="search" placeholder="Filter by name…" autocomplete="off">
+  <label>Size <select id="size"><option>64</option><option>32</option></select></label>
+  <label>Zoom <select id="scale"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+  <label>Background <select id="bg"><option>checker</option><option>dark</option><option>white</option><option>black</option></select></label>
+  <label><input id="shadow" type="checkbox"> Shadow</label>
+  <label><input id="allrot" type="checkbox" checked> Show all 4 rotations (flipped ones in amber)</label>
+  <span id="count">loading…</span>
 </header>
 <main id="list"></main>
 <script>
-    (() => {
-        // Same-origin by default. Open this file elsewhere with ?api=https://your-host to point it at the API.
-        const API = (new URLSearchParams(location.search).get('api') || '').replace(/\/+$/, '');
-        const $ = (id) => document.getElementById(id);
-        const opt = () => ({ size: +$('size').value, scale: +$('scale').value, shadow: $('shadow').checked, allrot: $('allrot').checked });
-        const rows = new Map();   // class -> { el, info, loaded }
-        const el = (tag, attrs = {}, ...kids) => {
-            const e = document.createElement(tag);
-            for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else e.setAttribute(k, v); }
-            for (const k of kids) e.append(k);
-            return e;
-        };
-        const url = (cls, params) => `${API}/render/${encodeURIComponent(cls)}?${new URLSearchParams(params)}`;
+(() => {
+  // Same-origin by default. Open this file elsewhere with ?api=https://your-host to point it at the API.
+  const API = (new URLSearchParams(location.search).get('api') || '').replace(/\/+$/, '');
+  const $ = (id) => document.getElementById(id);
+  const opt = () => ({ size: +$('size').value, scale: +$('scale').value, shadow: $('shadow').checked, allrot: $('allrot').checked });
+  const rows = new Map();   // class -> { el, info, loaded }
+  const el = (tag, attrs = {}, ...kids) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else e.setAttribute(k, v); }
+    for (const k of kids) e.append(k);
+    return e;
+  };
+  const url = (cls, params) => `${API}/render/${encodeURIComponent(cls)}?${new URLSearchParams(params)}`;
 
-        function fig(cls, label, params, mirrored) {
-            const href = url(cls, { ...params, scale: 4 });
-            const img = el('img', { src: url(cls, params), loading: 'lazy', alt: `${cls} ${label}` });
-            const cap = el('figcaption', mirrored ? { class: 'mirror' } : {}, label);
-            const f = el('figure', {}, el('a', { href, target: '_blank', rel: 'noopener' }, img), cap);
-            img.onerror = () => f.remove(); // direction/size not available for this item
-            return f;
-        }
+  function fig(cls, label, params, mirrored) {
+    const href = url(cls, { ...params, scale: 4 });
+    const img = el('img', { src: url(cls, params), loading: 'lazy', alt: `${cls} ${label}` });
+    const cap = el('figcaption', mirrored ? { class: 'mirror' } : {}, label);
+    const f = el('figure', {}, el('a', { href, target: '_blank', rel: 'noopener' }, img), cap);
+    img.onerror = () => f.remove(); // direction/size not available for this item
+    return f;
+  }
 
-        function fill(cls) {
-            const r = rows.get(cls);
-            if (!r || !r.info) return;
-            const { size, scale, shadow, allrot } = opt();
-            const info = r.info;
-            const native = size === 32 ? info.directions_small : info.directions;
-            const base = { size, scale };
-            if (shadow) base.shadow = 1;
-            const firstState = info.states.length ? info.states[0] : null;
+  function fill(cls) {
+    const r = rows.get(cls);
+    if (!r || !r.info) return;
+    const { size, scale, shadow, allrot } = opt();
+    const info = r.info;
+    const native = size === 32 ? info.directions_small : info.directions;
+    const base = { size, scale };
+    if (shadow) base.shadow = 1;
+    const firstState = info.states.length ? info.states[0] : null;
 
-            // directions
-            const dirCell = el('div', { class: 'cell' }, el('h3', {}, 'Directions'));
-            let dirs = native.slice();
-            if (allrot) dirs = [...new Set([0, 2, 4, 6, ...native])].sort((a, b) => a - b);
-            const rot = (info.rotations || {})[size] || {};
-            if (!native.length) dirCell.append(el('span', { class: 'empty' }, `no ${size}px sprites`));
-            else for (const d of dirs) {
-                const r = rot[d];
-                if (!r) continue;
-                const p = { ...base, direction: d };
-                if (firstState !== null) p.state = firstState;
-                const label = r.kind === 'native' ? `dir ${d}` : r.flipped ? `dir ${d} (flip of ${r.dir})` : `dir ${d} (uses ${r.dir})`;
-                dirCell.append(fig(cls, label, p, r.kind !== 'native'));
-            }
+    // directions
+    const dirCell = el('div', { class: 'cell' }, el('h3', {}, 'Directions'));
+    let dirs = native.slice();
+    if (allrot) dirs = [...new Set([0, 2, 4, 6, ...native])].sort((a, b) => a - b);
+    const rot = (info.rotations || {})[size] || {};
+    if (!native.length) dirCell.append(el('span', { class: 'empty' }, `no ${size}px sprites`));
+    else for (const d of dirs) {
+      const r = rot[d];
+      if (!r) continue;
+      const p = { ...base, direction: d };
+      if (firstState !== null) p.state = firstState;
+      const wl = info.wall ? (d === 2 ? 'leftwall' : 'rightwall') : null;
+      const label = wl ? `${wl}${r.flipped ? ' (client flip)' : ''}` : r.kind === 'native' ? `dir ${d}` : r.kind === 'single' ? `dir ${d} (only sprite)` : r.kind === 'alias' ? `dir ${d}${r.flipped ? ' (client flip)' : ' (alias)'}` : `dir ${d} (flip of ${r.dir})`;
+      dirCell.append(fig(cls, label, p, r.flipped && r.kind !== 'native'));
+    }
 
-            // states / animation
-            const stCell = el('div', { class: 'cell' }, el('h3', {}, 'States / animation'));
-            if (!info.states.length || !native.length) stCell.append(el('span', { class: 'empty' }, 'static (no states)'));
-            else {
-                const d = native.includes(2) ? 2 : native[0];
-                for (const s of info.states) stCell.append(fig(cls, `state ${s} · dir ${d}`, { ...base, direction: d, state: s, format: 'gif', fps: 8 }, false));
-            }
+    // states / animation
+    const stCell = el('div', { class: 'cell' }, el('h3', {}, 'States / animation'));
+    if (!info.states.length || !native.length) stCell.append(el('span', { class: 'empty' }, 'static (no states)'));
+    else {
+      const d = native.includes(2) ? 2 : native[0];
+      for (const st of info.state_details) {
+        const name = st.label ? `${st.id} ${st.label}` : `${st.id}${info.states_inferred ? ' (from frames)' : ''}`;
+        stCell.append(fig(cls, `state ${name}${st.animated ? ' ▶' : ''} · dir ${d}`, { ...base, direction: d, state: st.id, format: 'gif' }, false));
+      }
+    }
 
-            const frames = Object.values(info.frames || {}).reduce((m, f) => Math.max(m, f.length), 0);
-            const INK = { 0: 'copy', 8: 'matte', 32: 'blend', 33: 'add', 34: 'add', 35: 'sub', 36: 'bg-transp', 37: 'lightest', 38: 'sub', 39: 'darkest', 40: 'lighten?', 41: 'darken?' };
-            const lp = Object.entries(info.layer_props || {}).filter(([, v]) => v.ink !== null && ![8, 36].includes(v.ink)).map(([L, v]) => `${L}: ink ${v.ink} ${INK[v.ink] || ''}${v.blend !== null ? ' @' + v.blend + '%' : ''}`);
-            const light = info.lighting && info.lighting.behavior ? ` · light: ${info.lighting.behavior}` : '';
-            const meta = el('div', { class: 'meta' },
-                `${info.layers.length} layer${info.layers.length === 1 ? '' : 's'} · ${frames} frame${frames === 1 ? '' : 's'}`,
-                info.dimensions ? ` · ${info.dimensions[0]}×${info.dimensions[1]}` : '',
-                light, lp.length ? el('br') : '', lp.join(' · '),
-                el('br'), `bundle ${info.bundle} r${info.revision} · `,
-                el('a', { href: `${API}/furni/${encodeURIComponent(cls)}/layers?direction=2`, target: '_blank', rel: 'noopener' }, 'layers'), ' · ',
-                el('a', { href: `${API}/furni/${encodeURIComponent(cls)}`, target: '_blank', rel: 'noopener' }, 'json'));
-            r.el.replaceChildren(el('div', {}, el('div', { class: 'name' }, cls), meta), dirCell, stCell);
-        }
+    const frames = Object.values(info.frames || {}).reduce((m, f) => Math.max(m, f.length), 0);
+    const INK = { 0: 'copy', 8: 'matte', 32: 'blend', 33: 'add', 34: 'add', 35: 'sub', 36: 'bg-transp', 37: 'lightest', 38: 'sub', 39: 'darkest', 40: 'lighten?', 41: 'darken?' };
+    const lp = Object.entries(info.layer_props || {}).filter(([, v]) => v.ink !== null && ![8, 36].includes(v.ink)).map(([L, v]) => `${L}: ink ${v.ink} ${INK[v.ink] || ''}${v.blend !== null ? ' @' + v.blend + '%' : ''}`);
+    const beh = info.behavior ? ` · behaviour: ${info.behavior}` : '';
+    const light = info.lighting && info.lighting.behavior ? ` · light: ${info.lighting.behavior}` : '';
+    const meta = el('div', { class: 'meta' },
+      `${info.layers.length} layer${info.layers.length === 1 ? '' : 's'} · ${frames} frame${frames === 1 ? '' : 's'}`,
+      info.dimensions ? ` · ${info.dimensions[0]}×${info.dimensions[1]}` : '',
+      beh, light, lp.length ? el('br') : '', lp.join(' · '),
+      el('br'), `bundle ${info.bundle} r${info.revision} · `,
+      el('a', { href: `${API}/furni/${encodeURIComponent(cls)}/layers?direction=2`, target: '_blank', rel: 'noopener' }, 'layers'), ' · ',
+      el('a', { href: `${API}/furni/${encodeURIComponent(cls)}`, target: '_blank', rel: 'noopener' }, 'json'));
+    r.el.replaceChildren(el('div', {}, el('div', { class: 'name' }, cls), meta), dirCell, stCell);
+  }
 
-        async function load(cls) {
-            const r = rows.get(cls);
-            if (r.loaded) return;
-            r.loaded = true;
-            try {
-                const res = await fetch(`${API}/furni/${encodeURIComponent(cls)}`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                r.info = await res.json();
-                fill(cls);
-            } catch (e) {
-                r.el.replaceChildren(el('div', { class: 'name' }, cls), el('div', { class: 'err' }, String(e.message || e)));
-            }
-        }
+  async function load(cls) {
+    const r = rows.get(cls);
+    if (r.loaded) return;
+    r.loaded = true;
+    try {
+      const res = await fetch(`${API}/furni/${encodeURIComponent(cls)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      r.info = await res.json();
+      fill(cls);
+    } catch (e) {
+      r.el.replaceChildren(el('div', { class: 'name' }, cls), el('div', { class: 'err' }, String(e.message || e)));
+    }
+  }
 
-        const io = new IntersectionObserver((entries) => {
-            for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); load(e.target.dataset.cls); }
-        }, { rootMargin: '800px 0px' });
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); load(e.target.dataset.cls); }
+  }, { rootMargin: '800px 0px' });
 
-        function applyFilter() {
-            const q = $('q').value.trim().toLowerCase();
-            let shown = 0;
-            for (const [cls, r] of rows) { const hit = !q || cls.toLowerCase().includes(q); r.el.classList.toggle('hidden', !hit); if (hit) shown++; }
-            $('count').textContent = `${shown} of ${rows.size} furni`;
-        }
+  function applyFilter() {
+    const q = $('q').value.trim().toLowerCase();
+    let shown = 0;
+    for (const [cls, r] of rows) { const hit = !q || cls.toLowerCase().includes(q); r.el.classList.toggle('hidden', !hit); if (hit) shown++; }
+    $('count').textContent = `${shown} of ${rows.size} furni`;
+  }
 
-        async function init() {
-            const names = [];
-            for (let offset = 0; ; offset += 1000) {
-                const res = await fetch(`${API}/furni?limit=1000&offset=${offset}`);
-                if (!res.ok) throw new Error(`HTTP ${res.status} loading the list`);
-                const { items } = await res.json();
-                for (const it of items) names.push(it.class);
-                if (items.length < 1000) break;
-            }
-            const set = new Set(names);
-            // The index also lists s_<class> (small sprites), <class>_small and <class>_icon variants; show each furni once.
-            const base = names.filter((n) => !(n.startsWith('s_') && set.has(n.slice(2))) && !(/_(small|icon)$/.test(n) && set.has(n.replace(/_(small|icon)$/, ''))));
-            const frag = document.createDocumentFragment();
-            for (const cls of base) {
-                const row = el('div', { class: 'row', 'data-cls': cls }, el('div', { class: 'name' }, cls), el('span', { class: 'empty' }, 'loading…'));
-                rows.set(cls, { el: row, info: null, loaded: false });
-                frag.append(row);
-                io.observe(row);
-            }
-            $('list').append(frag);
-            applyFilter();
-        }
+  async function init() {
+    const names = [];
+    for (let offset = 0; ; offset += 1000) {
+      const res = await fetch(`${API}/furni?limit=1000&offset=${offset}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status} loading the list`);
+      const { items } = await res.json();
+      for (const it of items) names.push(it.class);
+      if (items.length < 1000) break;
+    }
+    const set = new Set(names);
+    // The index also lists s_<class> (small sprites), <class>_small and <class>_icon variants; show each furni once.
+    const base = names.filter((n) => !(n.startsWith('s_') && set.has(n.slice(2))) && !(/_(small|icon)$/.test(n) && set.has(n.replace(/_(small|icon)$/, ''))));
+    const frag = document.createDocumentFragment();
+    for (const cls of base) {
+      const row = el('div', { class: 'row', 'data-cls': cls }, el('div', { class: 'name' }, cls), el('span', { class: 'empty' }, 'loading…'));
+      rows.set(cls, { el: row, info: null, loaded: false });
+      frag.append(row);
+      io.observe(row);
+    }
+    $('list').append(frag);
+    applyFilter();
+  }
 
-        $('q').addEventListener('input', applyFilter);
-        for (const id of ['size', 'scale', 'shadow', 'allrot']) $(id).addEventListener('change', () => { for (const [cls, r] of rows) if (r.info) fill(cls); });
-        $('bg').addEventListener('change', () => { document.body.dataset.bg = $('bg').value; });
-        init().catch((e) => { $('count').textContent = ''; $('list').append(el('p', { class: 'err' }, `Could not load the furni list: ${e.message}`)); });
-    })();
+  $('q').addEventListener('input', applyFilter);
+  for (const id of ['size', 'scale', 'shadow', 'allrot']) $(id).addEventListener('change', () => { for (const [cls, r] of rows) if (r.info) fill(cls); });
+  $('bg').addEventListener('change', () => { document.body.dataset.bg = $('bg').value; });
+  init().catch((e) => { $('count').textContent = ''; $('list').append(el('p', { class: 'err' }, `Could not load the furni list: ${e.message}`)); });
+})();
 </script>
 </body>
 </html>

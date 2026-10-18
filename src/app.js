@@ -8,6 +8,7 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import * as D from './db.js';
 import * as R from './render.js';
+import { TICKS_PER_SECOND, stepAt } from './behavior.js';
 import * as store from './store.js';
 import * as sync from './sync.js';
 
@@ -52,7 +53,8 @@ async function colorsFor(cls, variant, colorsParam) {
     try { return R.parseColors(colorsParam); } catch (e) { throw new HttpError(400, e.message); }
   }
   if (variant) {
-    const fd = (await store.furnidata())[cls];
+    const all = await store.furnidata();
+    const fd = all[`${cls}*${variant}`] ?? all[cls]; // furnidata lists each colour variant as its own entry: 'rare_dragonlamp*2'
     const pc = fd?.partcolors?.color;
     if (Array.isArray(pc)) return pc.map(R.hexToRgb);
   }
@@ -110,14 +112,14 @@ export async function buildApp({ logger = false } = {}) {
     const q = req.query;
     const prefix = strq(q, 'q', 100).replace(/[%\\]/g, '').replace(/_/g, '\\_') + '%';
     const rows = D.all("SELECT class, bundle FROM classes WHERE class LIKE ? ESCAPE '\\' ORDER BY class LIMIT ? OFFSET ?",
-        prefix, int(q, 'limit', 100, 1, 1000), int(q, 'offset', 0, 0, 1e9));
+      prefix, int(q, 'limit', 100, 1, 1000), int(q, 'offset', 0, 0, 1e9));
     return { count: rows.length, items: rows };
   });
 
   app.get('/furni/new', async (req) => {
     const days = flt(req.query, 'days', 7, 0.0001, 3650);
     const rows = D.all("SELECT name, revision, first_seen, synced_at FROM bundles WHERE first_seen>=? AND status='ok' ORDER BY first_seen DESC LIMIT ?",
-        Date.now() / 1000 - days * 86400, int(req.query, 'limit', 200, 1, 2000));
+      Date.now() / 1000 - days * 86400, int(req.query, 'limit', 200, 1, 2000));
     const items = rows.map((r) => ({
       ...r,
       classes: D.all("SELECT class FROM classes WHERE bundle=? AND class NOT LIKE 's\\_%' ESCAPE '\\' AND class NOT LIKE '%\\_small' ESCAPE '\\'", r.name).map((c) => c.class),
@@ -137,13 +139,15 @@ export async function buildApp({ logger = false } = {}) {
 
   /** Debug: every layer's member, registration point, ink, visible pixels and whether it was dropped as an outlier. */
   app.get('/furni/:cls/layers', async (req) => {
-    const q = req.query, { furni } = lookup(req.params.cls);
+    const q = req.query, { furni, variant } = lookup(req.params.cls);
     const size = int(q, 'size', 64, 1, 1000);
     const direction = int(q, 'direction', 2, 0, 7), state = q.state === undefined ? null : int(q, 'state', null, 0, 9999);
-    const parts = await R.layout(furni, { direction, state, size, frame: int(q, 'frame', 0, 0, 999), outliers: 'hide' });
+    const frame = int(q, 'frame', 0, 0, 999);
+    const parts = await R.layout(furni, { direction, variant, size, ...(state === null ? { frame } : { step: stepAt(furni, state, frame) }), outliers: 'hide' });
     return {
       class: furni.cls, requested_direction: direction, resolved: parts.res,
-      layers: parts.all.map((p) => ({ layer: p.layer, member: p.member, regPoint: furni.members[p.member]?.regPoint, size: [p.img.width, p.img.height],
+      fields: Object.fromEntries(Object.keys(furni.meta.fields).map((n) => [n, fs.readFileSync(path.join(furni.dir, furni.meta.fields[n]), 'utf8').slice(0, 4000)])),
+      layers: parts.all.map((p) => ({ layer: p.layer, member: p.member, regPoint: furni.member(p.member)?.regPoint, size: [p.img.width, p.img.height],
         offset: [p.x, p.y], visible_pixels: p.vis, box: p.box, ink: p.ink, mode: p.mode, zshift: p.z, dropped_as_outlier: p.outlier })),
     };
   });
@@ -157,25 +161,24 @@ export async function buildApp({ logger = false } = {}) {
     if (size !== 32 && size !== 64) throw new HttpError(400, 'size must be 32 or 64');
     const shadow = bool(q, 'shadow', false), mirror = bool(q, 'mirror', true);
     const matte = oneOf(q, 'matte', 'edge', ['edge', 'exact']);
-    const scale = int(q, 'scale', 1, 1, 4), pad = int(q, 'pad', 0, 0, 64), fps = int(q, 'fps', 8, 1, 30);
+    const scale = int(q, 'scale', 1, 1, 4), pad = int(q, 'pad', 0, 0, 64), fps = int(q, 'fps', TICKS_PER_SECOND, 1, 60); // ticks per second; the client runs at 15
     const format = oneOf(q, 'format', 'png', ['png', 'gif']);
-    const fallback = oneOf(q, 'fallback', 'nearest', ['nearest', 'none']); // nearest = use the closest native direction when a rotation has no sprites
     const outliers = oneOf(q, 'outliers', 'hide', ['hide', 'keep']);    // hide = drop tiny far-away marker sprites
     const inks = oneOf(q, 'inks', 'client', ['client', 'flat']); // client = additive/subtract/etc. glow layers; flat = treat every layer as plain
     const bgParam = strq(q, 'bg', 7);
-    const bg = bgParam ? R.hexToRgb(bgParam) : null;
+    const bg = bgParam && /^#?[0-9a-f]{6}$/i.test(bgParam) ? R.hexToRgb(bgParam) : null;
     if (bgParam && !bg) throw new HttpError(400, 'bg must be a 6-digit hex colour');
     const { furni, variant } = lookup(cls);
     const colors = await colorsFor(furni.cls === cls ? cls : cls.split('*')[0], variant, strq(q, 'colors', 200));
-    const key = crypto.createHash('sha1').update(JSON.stringify([R.RENDER_VERSION, cls, furni.meta.revision, direction, state, frame, size, colors, shadow, mirror, matte, inks, fallback, outliers, scale, bg, pad, fps, format])).digest('hex');
+    const key = crypto.createHash('sha1').update(JSON.stringify([R.RENDER_VERSION, cls, furni.meta.revision, direction, state, frame, size, colors, shadow, mirror, matte, inks, outliers, scale, bg, pad, fps, format])).digest('hex');
     const out = await cached(key, format, async () => {
       let frames;
       if (format === 'png') {
-        const r = await R.render(furni, { direction, state, frame, size, colors, shadow, mirror, matte, inks, fallback, outliers, pad, bg });
+        const r = await R.render(furni, { direction, variant, size, ...(state === null ? { frame } : { step: stepAt(furni, state, frame) }), colors, shadow, mirror, matte, inks, outliers, pad, bg });
         frames = r ? [r] : [];
-      } else frames = await R.renderFrames(furni, { direction, state, size, colors, shadow, mirror, matte, inks, fallback, outliers, pad, bg });
+      } else frames = await R.renderFrames(furni, { direction, variant, state, size, colors, shadow, mirror, matte, inks, outliers, pad, bg });
       if (!frames.length) throw new HttpError(404, `no sprite for direction ${direction} at size ${size}`);
-      const enc = await R.encode(frames, format, fps, scale, bg);
+      const enc = await R.encode(frames, format, fps, scale, bg); // every frame carries its own tick count; fps = ticks per second
       const f0 = frames[0];
       return { ...enc, ox: f0.ox * scale, oy: f0.oy * scale, used: f0.res ? `${f0.res.dir}${f0.res.flipped ? 'f' : ''}:${f0.res.kind}` : '', dropped: (f0.dropped ?? []).join(',') };
     });
@@ -193,7 +196,7 @@ export async function buildApp({ logger = false } = {}) {
     const colors = await colorsFor(req.params.cls.split('*')[0], variant, strq(q, 'colors', 200));
     let dirs = furni.directions(size).filter((d) => [0, 2, 4, 6].includes(d));
     if (!dirs.length) dirs = furni.directions(size);
-    const shots = (await Promise.all(dirs.map((d) => R.render(furni, { direction: d, state, size, colors, shadow, bg: null })))).filter(Boolean);
+    const shots = (await Promise.all(dirs.map((d) => R.render(furni, { direction: d, variant, size, ...(state === null ? {} : { step: stepAt(furni, state, 0) }), colors, shadow, bg: null })))).filter(Boolean);
     if (!shots.length) throw new HttpError(404, 'nothing to render');
     const W = shots.reduce((a, s) => a + s.img.width + 8, 8), H = Math.max(...shots.map((s) => s.img.height)) + 16;
     const parts = []; let x = 8;
@@ -207,7 +210,7 @@ export async function buildApp({ logger = false } = {}) {
     const { furni } = lookup(req.params.cls);
     const name = furni.icon();
     if (!name) throw new HttpError(404, 'no icon in this bundle');
-    const img = R.prepare(await R.loadPng(`${furni.dir}/${furni.members[name].file}`), { ink: 8 });
+    const img = R.prepare(await R.loadPng(furni.member(name).path), { ink: 8 });
     const { data, mime } = await R.encode([{ img }], 'png', 8, int(req.query, 'scale', 1, 1, 6), null);
     return reply.header('Cache-Control', 'public, max-age=3600').type(mime).send(data);
   });

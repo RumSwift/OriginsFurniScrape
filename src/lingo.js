@@ -4,7 +4,7 @@
 // Symbols (#ink) become plain strings; [:] is an empty object. Dicts are null-prototype objects.
 export class LingoError extends Error {}
 
-const TOK = /\s*(?:(--[^\n]*)|("(?:[^"\\]|\\.)*")|(#?[A-Za-z_][A-Za-z0-9_.]*)|(-?\d+(?:\.\d+)?)|([\[\],:]))/y;
+const TOK = /\s*(?:(--[^\n]*)|("(?:[^"\\]|\\.)*")|(#?[A-Za-z_][A-Za-z0-9_.]*)|(-?\d+(?:\.\d+)?)|([\[\],:()]))/y;
 
 function tokens(text) {
   text = text.replace(/\r/g, '\n');
@@ -38,6 +38,19 @@ function value(t, i, depth) {
   if (depth > 40) throw new LingoError('nesting too deep');
   if (i >= t.length) throw new LingoError('unexpected end');
   const [kind, v] = t[i];
+  if (kind === 'i' && isP(t[i + 1], '(')) { // function-call form: point(x, y) -> {x, y}; anything else -> array of arguments
+    const args = [];
+    i += 2;
+    for (;;) {
+      if (i >= t.length) throw new LingoError('unterminated call');
+      if (isP(t[i], ')')) { i++; break; }
+      if (isP(t[i], ',')) { i++; continue; }
+      let a;
+      [a, i] = value(t, i, depth + 1);
+      args.push(a);
+    }
+    return [v === 'point' && args.length === 2 ? { x: args[0], y: args[1] } : args, i];
+  }
   if (kind !== 'p') return [v, i + 1];
   if (v !== '[') throw new LingoError(`unexpected ${JSON.stringify(v)}`);
   i++;

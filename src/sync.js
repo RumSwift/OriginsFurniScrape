@@ -83,7 +83,7 @@ export function validateIndex(idx) {
   for (const [name, b] of Object.entries(bundles)) {
     const bl = Number(b?.byteLength);
     const ok = NAME_RE.test(name) && !name.includes('..') && PATH_RE.test(b?.path ?? '') && !b.path.includes('..') &&
-        SHA_RE.test(b?.sha256 ?? '') && bl > 0 && bl <= config.SYNC_MAX_BUNDLE_BYTES;
+      SHA_RE.test(b?.sha256 ?? '') && bl > 0 && bl <= config.SYNC_MAX_BUNDLE_BYTES;
     if (ok) good[name] = { revision: Number(b.revision ?? 0) | 0, path: b.path, sha256: b.sha256, byteLength: bl };
     else log('warn', `skipping malformed index entry ${JSON.stringify(name)}`);
   }
@@ -180,7 +180,7 @@ export async function run({ only = null, force = false } = {}) {
       if (only && !only.has(name)) continue;
       const h = have.get(name);
       const same = h && h.revision === info.revision && h.sha256 === info.sha256 && h.status === 'ok' &&
-          fs.existsSync(path.join(config.FURNI_DIR, safeFile(name), 'meta.json'));
+        fs.existsSync(path.join(config.FURNI_DIR, safeFile(name), 'meta.json'));
       if (force || !same) todo.push([name, info]);
     }
     STATUS.total = todo.length;
@@ -198,9 +198,9 @@ export async function run({ only = null, force = false } = {}) {
           await processBundle(name, info, base);
           D.run(`INSERT INTO bundles(name,revision,sha256,byte_length,path,first_seen,synced_at,status)
                  VALUES(?,?,?,?,?,?,?,'ok') ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,
-                   sha256=excluded.sha256, byte_length=excluded.byte_length, path=excluded.path,
-                   synced_at=excluded.synced_at, status='ok'`,
-              name, info.revision, info.sha256, info.byteLength, info.path, now, Date.now() / 1000);
+                 sha256=excluded.sha256, byte_length=excluded.byte_length, path=excluded.path,
+                 synced_at=excluded.synced_at, status='ok'`,
+          name, info.revision, info.sha256, info.byteLength, info.path, now, Date.now() / 1000);
           fails = 0;
           STATUS.downloaded++;
         } catch (e) {

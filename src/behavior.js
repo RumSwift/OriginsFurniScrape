@@ -1,0 +1,127 @@
+// Animation timelines, modelled on the client's furniture scripts (decoded from its runtime pack).
+// A timeline is { steps: [{ ticks, layers: { <letter>: { frame?, visible?, blend? } } }], finite, source }.
+// One tick = one client frame (the client movie runs at 15 fps, so TICKS_PER_SECOND = 15).
+import { classChain } from './aliasdb.js';
+
+export const TICKS_PER_SECOND = 15;
+
+const single = (layers, source) => ({ steps: [{ ticks: 1, layers }], finite: false, source });
+const same = (letters, o) => Object.fromEntries(letters.map((l) => [l, o]));
+
+/**
+ * Hard-coded behaviours of the client's special classes. `states` are the stuffdata values the script understands
+ * (0 = off/closed, 1 = on/open). Sprite numbers in the scripts map to layer letters (sprite 1 = a, 2 = b ...).
+ */
+const BEHAVIORS = {
+  // Furniture Barrier Class: state "1" shows sprite 5 (layer e) for 20 ticks then hides it for 26 (blink), state "0" hides it.
+  barrier: {
+    chain: 'Furniture Barrier Class',
+    states: [{ id: 0, label: 'off' }, { id: 1, label: 'on (blinking)' }],
+    timeline: (state) => state === 1
+      ? { steps: [{ ticks: 20, layers: { e: { visible: true } } }, { ticks: 26, layers: { e: { visible: false } } }], finite: false, source: 'barrier' }
+      : single({ e: { visible: false } }, 'barrier'),
+  },
+  // Furniture Divider Class (gates, dividers): every layer shows the frame equal to the state (0 closed, 1 open).
+  divider: {
+    chain: 'Furniture Divider Class',
+    states: [{ id: 0, label: 'closed' }, { id: 1, label: 'open' }],
+    timeline: (state, furni) => single(same(furni.layers, { frame: state === 1 ? 1 : 0 }), 'divider'),
+  },
+  // Furniture Lamp Class: layers b and c use frame = switch (0 off, 1 on).
+  lamp: {
+    chain: 'Furniture Lamp Class',
+    states: [{ id: 0, label: 'off' }, { id: 1, label: 'on' }],
+    timeline: (state) => single(same(['b', 'c'], { frame: state === 1 ? 1 : 0 }), 'lamp'),
+  },
+  // Furniture DragonLamp Class: on = layers c, e, g frame 1 and layer f cycling frames 1..4, one frame every 2 ticks; off = all frame 0.
+  dragonlamp: {
+    chain: 'Furniture DragonLamp Class',
+    states: [{ id: 0, label: 'off' }, { id: 1, label: 'on (animated)' }],
+    timeline: (state) => state === 1
+      ? { steps: [1, 2, 3, 4].map((f) => ({ ticks: 2, layers: { c: { frame: 1 }, e: { frame: 1 }, g: { frame: 1 }, f: { frame: f } } })), finite: false, source: 'dragonlamp' }
+      : single(same(['c', 'e', 'f', 'g'], { frame: 0 }), 'dragonlamp'),
+  },
+  // Furniture Fan Class: on = layer c frame 1 and layer d cycling frames 1..3 (2 ticks each); off = frame 0.
+  fan: {
+    chain: 'Furniture Fan Class',
+    states: [{ id: 0, label: 'off' }, { id: 1, label: 'on (animated)' }],
+    timeline: (state) => state === 1
+      ? { steps: [1, 2, 3].map((f) => ({ ticks: 2, layers: { c: { frame: 1 }, d: { frame: f } } })), finite: false, source: 'fan' }
+      : single(same(['c', 'd'], { frame: 0 }), 'fan'),
+  },
+};
+
+/** Name of the special behaviour a class runs, or null. */
+export function behaviorOf(cls) {
+  const chain = classChain(cls);
+  for (const [name, b] of Object.entries(BEHAVIORS)) if (chain.includes(b.chain)) return name;
+  return null;
+}
+
+export const behaviorStates = (name) => BEHAVIORS[name]?.states ?? null;
+
+// ---------------------------------------------------------------- generic `.data` engine
+/**
+ * Simulates the client's Active Object Extension update loop for one state: per layer a frame list advances every `delay` ticks;
+ * `loop` counts passes (absent = once, 0 = forever); a finished layer holds its last frame.
+ * Not modelled: #random frame order and #sequences (the first sequence is used).
+ */
+function dataTimeline(furni, state, maxSteps = 96) {
+  const L = [];
+  for (const layer of furni.layers) {
+    const a = furni.layerAnim(layer, state);
+    if (!a) continue;
+    L.push({ layer, frames: a.frames, delay: a.delay, blend: a.blend, n: 1, rep: 1, lc: a.loop === null ? 1 : a.loop - 1, on: true });
+  }
+  if (!L.length) return single({}, 'static');
+  const sig = () => L.map((s) => `${s.n},${s.rep},${s.lc},${s.on ? 1 : 0}`).join('|');
+  const shot = () => Object.fromEntries(L.map((s) => {
+    const o = { frame: s.frames[s.n - 1] };
+    if (s.blend && s.blend.length >= s.n) o.blend = s.blend[s.n - 1];
+    return [s.layer, o];
+  }));
+  const seen = new Map(), snaps = [];
+  let finite = false;
+  for (let t = 0; t < 4000; t++) {
+    const key = sig();
+    if (seen.has(key)) { snaps.splice(0, seen.get(key)); break; }
+    seen.set(key, t);
+    snaps.push(shot());
+    if (!L.some((s) => s.on)) { finite = true; break; }
+    for (const s of L) {
+      if (!s.on) continue;
+      if (s.rep >= s.delay) {
+        let go = 1;
+        const len = s.frames.length;
+        if (s.n === len) {
+          if (s.lc > 0) s.lc--;
+          go = s.lc;
+          if (s.lc === 0) s.on = false;
+        }
+        if (s.n < len || go) s.n = (s.n % len) + 1;
+        s.rep = 1;
+      } else s.rep++;
+    }
+  }
+  const steps = [];
+  for (const snap of snaps) {
+    const last = steps[steps.length - 1];
+    if (last && JSON.stringify(last.layers) === JSON.stringify(snap)) last.ticks++;
+    else steps.push({ ticks: 1, layers: snap });
+  }
+  if (finite && steps.length) steps[steps.length - 1].ticks += TICKS_PER_SECOND; // hold the final pose a moment before the GIF restarts
+  return { steps: steps.slice(0, maxSteps), finite, source: '.data' };
+}
+
+/** -> timeline for a state. state === null -> a single empty step (every layer at its default frame). */
+export function timeline(furni, state) {
+  if (state === null) return single({}, 'none');
+  if (furni.behavior) return BEHAVIORS[furni.behavior].timeline(state, furni);
+  return dataTimeline(furni, state);
+}
+
+/** The step shown for index `i` (wraps). */
+export function stepAt(furni, state, i = 0) {
+  const t = timeline(furni, state);
+  return t.steps[((i % t.steps.length) + t.steps.length) % t.steps.length];
+}

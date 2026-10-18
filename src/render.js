@@ -4,28 +4,34 @@
 import fs from 'node:fs';
 import gifenc from 'gifenc';
 import pngjs from 'pngjs';
+import { paletteColor } from './aliasdb.js';
+import { TICKS_PER_SECOND, timeline } from './behavior.js';
 
 const { PNG } = pngjs;
 const { GIFEncoder, quantize, applyPalette } = gifenc;
 
-export const SHADOW_ALPHA = 0.3;
+export const SHADOW_ALPHA = 0.2; // the client draws the shadow sprite at 20% blend
 /** Bump when output changes, so cached renders are not served stale. */
-export const RENDER_VERSION = 4;
+export const RENDER_VERSION = 6;
 
 // Director ink numbers -> blend operator. 33/34 add, 35/38 subtract, 37 lightest, 39 darkest are standard Director.
 // 40 (lighten) and 41 (darken) exist in the client's ink table; the exact formulas are NOT verified (screen / multiply guessed).
 const INK_MODE = { 33: 'add', 34: 'add', 35: 'sub', 38: 'sub', 37: 'lightest', 39: 'darkest', 40: 'screen', 41: 'multiply' };
 export const inkMode = (ink) => INK_MODE[ink] ?? 'normal';
 
-export function parseColors(s) {
-  return (s || '').split(',').map((p) => {
-    p = p.trim().replace(/^#/, '');
-    if (!p) return null;
-    if (!/^[0-9a-f]{6}$/i.test(p)) throw new Error(`bad colour '${p}'`);
-    return [0, 2, 4].map((i) => parseInt(p.slice(i, i + 2), 16));
-  });
+/**
+ * One part colour as the client reads it: '#rrggbb' / 'rrggbb' / '*rrggbb', or an integer 0-255 = index into the client's default
+ * palette (System - Win), like paletteIndex(n). Empty -> null (layer stays uncoloured).
+ */
+export function colorFrom(v) {
+  const p = String(v ?? '').trim().replace(/^[#*]/, '');
+  if (!p) return null;
+  if (/^\d{1,3}$/.test(p) && Number(p) <= 255) return paletteColor(Number(p));
+  if (!/^[0-9a-f]{6}$/i.test(p)) throw new Error(`bad colour '${v}'`);
+  return [0, 2, 4].map((i) => parseInt(p.slice(i, i + 2), 16));
 }
-export const hexToRgb = (h) => (/^#?[0-9a-f]{6}$/i.test(h) ? parseColors(h)[0] : null);
+export const parseColors = (s) => (s || '').split(',').map(colorFrom);
+export const hexToRgb = (h) => { try { return colorFrom(h); } catch { return null; } };
 
 // ---------------------------------------------------------------- PNG cache
 const pngCache = new Map();
@@ -99,7 +105,7 @@ function flipX(img) {
 function zshift(props, dir) {
   const z = props.zshift;
   if (typeof z === 'number') return z;
-  if (Array.isArray(z) && z.length) return dir < z.length ? Number(z[dir]) || 0 : z.length === 1 ? Number(z[0]) || 0 : 0;
+  if (Array.isArray(z) && z.length) return Number(dir < z.length ? z[dir] : z[0]) || 0; // the client uses entry 1 when the list is shorter than the direction
   return 0;
 }
 const num = (v, def) => (typeof v === 'number' ? Math.trunc(v) : def);
@@ -117,57 +123,57 @@ const gap = (a, b) => Math.max(a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3
 
 /**
  * -> [{ img, x, y, mode, layer, member, ... }] relative to the tile origin, in draw order.
- * The array carries `.all` (every layer incl. dropped ones, with flags), `.res` (resolved direction) and `.dropped` (layer letters).
+ * The array carries `.all` (every layer incl. dropped ones, with flags), `.res` (item-level rotation info) and `.dropped` (layer letters).
  * Layers with no visible pixels are skipped. With outliers='hide' (default) a tiny sprite (<64 visible px) lying >60px away from
  * the rest of the item is dropped: those are scripted-effect anchors / hidden-state markers, not part of the picture.
  */
-export async function layout(furni, { direction = 2, state = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', fallback = 'nearest', outliers = 'hide' } = {}) {
-  const res = furni.resolveDirection(direction, size, mirror, fallback === 'nearest');
-  const none = Object.assign([], { all: [], res: null, dropped: [] });
-  if (!res) return none;
+export async function layout(furni, { direction = 2, variant = null, step = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', outliers = 'hide' } = {}) {
   const items = [];
   await Promise.all(furni.layers.map(async (layer, li) => {
-    let fr = frame;
-    if (state !== null) {
-      const lf = furni.layerFrames(layer, state);
-      if (lf) fr = lf[frame % lf.length];
-    }
-    const name = furni.spriteAt(layer, res.dir, fr, size);
-    if (!name) return;
-    const m = furni.members[name];
+    const ov = step?.layers?.[layer] ?? null;
+    if (ov?.visible === false) return;
+    const pick = furni.sprite(layer, direction, ov?.frame ?? frame, size, mirror, variant);
+    if (!pick) return;
+    const m = furni.member(pick.name);
     const props = furni.layerProps(layer);
     const ink = num(props.ink, 8);
-    let im = prepare(await loadPng(`${furni.dir}/${m.file}`), { ink, color: colors[li] ?? null, blend: num(props.blend, 100), matte });
+    let im = prepare(await loadPng(m.path), { ink, color: colors[li] ?? null, blend: num(ov?.blend, num(props.blend, 100)), matte });
     const [rx, ry] = m.regPoint;
     let x = -rx;
-    if (res.flipped) { im = flipX(im); x = rx - im.width; }
+    if (pick.flipped) { im = flipX(im); x = rx - im.width; }
+    const [sx, sy] = furni.locshift(layer, furni.effDir(direction)); // `locshift` from .props
+    x += sx;
     const t = tight(im);
     if (!t.vis) return; // nothing to draw
-    items.push({ z: zshift(props, res.dir), li, layer, member: name, ink, img: im, x, y: -ry, vis: t.vis,
-      box: [x + t.minx, -ry + t.miny, x + t.maxx + 1, -ry + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
+    // client draw order: the layer's zshift for this direction plus its position in the layer list (ties keep layer order)
+    items.push({ z: zshift(props, furni.effDir(direction)) + (li - 5), li, layer, member: pick.name, ink, img: im, x, y: -ry + sy, vis: t.vis, flipped: pick.flipped,
+      box: [x + t.minx, -ry + sy + t.miny, x + t.maxx + 1, -ry + sy + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
   }));
   const big = items.filter((i) => i.vis >= OUTLIER_MAX_PIXELS);
   if (big.length) {
     const main = [Math.min(...big.map((i) => i.box[0])), Math.min(...big.map((i) => i.box[1])), Math.max(...big.map((i) => i.box[2])), Math.max(...big.map((i) => i.box[3]))];
     for (const i of items) if (i.vis < OUTLIER_MAX_PIXELS && gap(i.box, main) > OUTLIER_MIN_GAP) i.outlier = true;
   }
-  if (shadow && furni.shadow[size] && items.length) {
-    const m = furni.members[furni.shadow[size]];
-    let im = prepare(await loadPng(`${furni.dir}/${m.file}`), { ink: 8, blend: Math.trunc(SHADOW_ALPHA * 100), matte });
+  const sd = shadow && items.length ? furni.shadowFor(direction, size, mirror) : null;
+  if (sd) {
+    const m = furni.member(sd.name);
+    let im = prepare(await loadPng(m.path), { ink: 8, blend: Math.trunc(SHADOW_ALPHA * 100), matte });
     const [rx, ry] = m.regPoint;
     let x = -rx;
-    if (res.flipped) { im = flipX(im); x = rx - im.width; }
-    items.push({ z: -10000, li: -1, layer: 'shadow', member: furni.shadow[size], ink: 8, img: im, x, y: -ry, vis: tight(im).vis, box: null, mode: 'normal', outlier: false });
+    // a per-direction shadow already carries its own orientation; the single `_sd` follows the item
+    const flipped = sd.flipped || (sd.name.endsWith('_sd') && items.slice().sort((a, b) => a.li - b.li)[0].flipped);
+    if (flipped) { im = flipX(im); x = rx - im.width; }
+    items.push({ z: -10000, li: -1, layer: 'shadow', member: sd.name, ink: 8, img: im, x, y: -ry, vis: tight(im).vis, box: null, mode: 'normal', outlier: false });
   }
   items.sort((a, b) => a.z - b.z || a.li - b.li);
   const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
-  return Object.assign(keep, { all: items, res, dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
+  return Object.assign(keep, { all: items, res: furni.resolveDirection(direction, size, mirror), dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
 }
 
 const bbox = (parts) => parts.length
-    ? [Math.min(...parts.map((p) => p.x)), Math.min(...parts.map((p) => p.y)),
-      Math.max(...parts.map((p) => p.x + p.img.width)), Math.max(...parts.map((p) => p.y + p.img.height))]
-    : null;
+  ? [Math.min(...parts.map((p) => p.x)), Math.min(...parts.map((p) => p.y)),
+    Math.max(...parts.map((p) => p.x + p.img.width)), Math.max(...parts.map((p) => p.y + p.img.height))]
+  : null;
 
 const CH = {
   add: (d, s) => Math.min(255, d + s),
@@ -238,15 +244,13 @@ export async function render(furni, { pad = 0, bg = null, ...opts } = {}) {
   return out && { ...out, res: parts.res, dropped: parts.dropped };
 }
 
-/** Animation: one image per step, all on a shared canvas so nothing jitters. */
-export async function renderFrames(furni, { direction = 2, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', fallback = 'nearest', outliers = 'hide', pad = 0, bg = null, maxFrames = 64 } = {}) {
-  let n = 1;
-  if (state !== null) for (const L of furni.layers) { const lf = furni.layerFrames(L, state); if (lf) n = Math.max(n, lf.length); }
-  n = Math.min(n, maxFrames);
+/** Animation of a state: one image per timeline step, all on a shared canvas so nothing jitters. Each frame carries `ticks`. */
+export async function renderFrames(furni, { direction = 2, variant = null, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', outliers = 'hide', pad = 0, bg = null, maxFrames = 96 } = {}) {
+  const steps = timeline(furni, state).steps.slice(0, maxFrames);
   const sets = [];
-  for (let i = 0; i < n; i++) sets.push(await layout(furni, { direction, state, frame: i, size, colors, shadow, mirror, matte, inks, fallback, outliers }));
+  for (const step of steps) sets.push(await layout(furni, { direction, variant, step, size, colors, shadow, mirror, matte, inks, outliers }));
   const box = bbox(sets.flat());
-  return box ? sets.map((s) => ({ ...compose(s, box, pad, bg), res: s.res, dropped: s.dropped })) : [];
+  return box ? sets.map((s, i) => ({ ...compose(s, box, pad, bg), res: s.res, dropped: s.dropped, ticks: steps[i].ticks })) : [];
 }
 
 // ---------------------------------------------------------------- output
@@ -294,21 +298,20 @@ function indexFrame(img) {
   return { index, palette };
 }
 
-function encodeGif(imgs, delay) {
+function encodeGif(imgs, delays) {
   const { width, height } = imgs[0];
   const gif = GIFEncoder();
   imgs.forEach((img, i) => {
     const { index, palette } = indexFrame(img);
-    gif.writeFrame(index, width, height, { palette, delay, transparent: true, transparentIndex: 255, dispose: 2, repeat: 0 });
-    void i;
+    gif.writeFrame(index, width, height, { palette, delay: delays[i], transparent: true, transparentIndex: 255, dispose: 2, repeat: 0 });
   });
   gif.finish();
   return Buffer.from(gif.bytes());
 }
 
-/** frames: [{img}]; returns { data: Buffer, mime }. Formats: png (first frame) | gif (animated). */
-export async function encode(frames, fmt = 'png', fps = 8, scale = 1, bg = null) {
+/** frames: [{img, ticks?}]; returns { data: Buffer, mime }. Formats: png (first frame) | gif (animated, each frame lasts ticks / ticksPerSecond). */
+export async function encode(frames, fmt = 'png', ticksPerSecond = TICKS_PER_SECOND, scale = 1, bg = null) {
   const imgs = frames.map((f) => finish(f.img, scale, bg));
-  if (fmt === 'gif') return { data: encodeGif(imgs, Math.max(20, Math.trunc(1000 / Math.max(1, fps)))), mime: 'image/gif' };
+  if (fmt === 'gif') return { data: encodeGif(imgs, frames.map((f) => Math.max(20, Math.round(((f.ticks ?? 1) * 1000) / Math.max(1, ticksPerSecond))))), mime: 'image/gif' };
   return { data: encodePng(imgs[0]), mime: 'image/png' };
 }
