@@ -129,7 +129,8 @@ export function extensionTimeline(dm, state, { maxTicks = 600, cls = '' } = {}) 
     if (f < 0) f = R(-f);
     return f;
   };
-  const snap = () => Object.fromEntries(L.map((s) => [s.letter, s.blend === undefined ? { frame: frameOf(s) } : { frame: frameOf(s), blend: s.blend }]));
+  // bare: the state has no frame list for this layer (wall items then use the plain "<side> <class>" member)
+  const snap = () => Object.fromEntries(L.map((s) => [s.letter, { frame: frameOf(s), ...(s.blend === undefined ? {} : { blend: s.blend }), ...(list(s) ? {} : { bare: true }) }]));
   const sig = () => L.map((s) => `${s.n},${s.n2},${s.seq},${s.rep},${s.lc},${s.on ? 1 : 0},${s.blend}`).join('|');
   const animates = (s) => s.e && (s.frames || s.seqs);
   const snaps = [], seen = new Map();
@@ -206,10 +207,23 @@ function rename(furni, s, name) {
  * Applies one behaviour step to the base sprites. step.layers = { L: { frame?, visible? } } where L is the sprite's letter
  * (sprite n = letter n in the base list).
  */
-function applyBehaviour(furni, kind, base, step) {
+function applyBehaviour(furni, kind, base, step, size = 64) {
   const sprites = base.sprites.map((s) => ({ ...s }));
   const at = (L) => sprites[L.charCodeAt(0) - 97];
   const ops = step?.layers ?? {};
+  if (kind === 'plant' || kind === 'plant-strict') {
+    // Furniture Plant Class setFrame (resolveMemName): <class>_<layer>_0_<x>_<y>_<dir> taken from the sprite's current member
+    // (which may be another class's shared art), + "_" + stuffdata. Used for unknown scripts too, falling back to a plain rename.
+    const pre = size === 32 ? `s_${furni.cls}` : furni.cls;
+    for (const [L, o] of Object.entries(ops)) {
+      const s = at(L);
+      if (!s || o.frame === undefined) continue;
+      const items = s.name.split('_'), n = items.length;
+      if (n >= 6 && rename(furni, s, `${pre}_${items.slice(n - 6, n - 1).join('_')}_${o.frame}`)) continue;
+      if (kind !== 'plant-strict') rename(furni, s, swapLast(s.name, String(o.frame)));
+    }
+    return sprites;
+  }
   if (kind === 'divider') {
     // Furniture Divider Class update (open only): <current member minus "<dir>_<frame>"><objectDir>_1 if it exists (fresh flip,
     // location reset without locshift), else the current member's frame-1 sibling (flip and location kept).
@@ -259,8 +273,8 @@ export function solve(furni, { direction = 2, size = 64, step = null, frame = 0,
   if (dm && (dm.letters.length || dm.states.length)) sprites = applyExtension(furni, base, dm, step, size);
   else if (dm) sprites = base.sprites; // empty / invalid .data: the extension hands everything to Active Object Class
   else if (furni.behavior && step) sprites = base.sprites.length >= (MIN_SPRITES[furni.behavior] ?? 0) ? applyBehaviour(furni, KIND[furni.behavior] ?? 'swap', base, step) : base.sprites;
-  else if (step) sprites = applyBehaviour(furni, 'swap', base, step);
-  else if (frame) sprites = applyBehaviour(furni, 'swap', base, { layers: Object.fromEntries(base.sprites.map((s) => [s.layer, { frame }])) });
+  else if (step) sprites = applyBehaviour(furni, furni.chain.includes('Furniture Plant Class') ? 'plant-strict' : 'plant', base, step, size);
+  else if (frame) sprites = applyBehaviour(furni, 'plant', base, { layers: Object.fromEntries(base.sprites.map((s) => [s.layer, { frame }])) }, size);
   else sprites = base.sprites;
   return { ...base, sprites };
 }

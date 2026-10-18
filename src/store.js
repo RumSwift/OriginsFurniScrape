@@ -74,7 +74,7 @@ export class Furni {
     // the client upgrades a class to Active Object Extension Class when it has a .data member and no script of its own
     const plain = !this.chain.length || (this.chain.length === 1 && this.chain[0] === 'Active Object Class');
     this.mode = this.behavior ? this.behavior
-      : this.hasDataMember && (plain || this.chain.some((c) => /Active Object Extension Class$/.test(c))) ? 'extension' : null;
+      : this.hasDataMember && (plain || this.chain.some((c) => /Object Extension Class$/.test(c))) ? 'extension' : null;
     this.dm = { 64: dataModel(this.data), 32: dataModel(this.sdata) };
     this.#index();
     const lc = this.meta.lighting?.classes ?? {};
@@ -310,6 +310,8 @@ export class Furni {
   stateList() {
     const labels = this.behavior ? new Map(behaviorStates(this.behavior).map((x) => [x.id, x.label])) : new Map();
     const strs = this.mode === 'extension' ? this.dm[64]?.strings ?? [] : [];
+    // Furniture Plant Class getStageSymbol: 0 waiting, 4 grown, 5 fruiting, 6 dead, anything else growing
+    if (this.chain.includes('Furniture Plant Class')) for (const id of this.states()) labels.set(id, { 0: 'waiting', 4: 'grown', 5: 'fruiting', 6: 'dead' }[id] ?? 'growing');
     return this.states().map((id, i) => ({ id, label: labels.get(id) ?? (typeof strs[i] === 'string' ? strs[i] : null), animated: timeline(this, id).steps.length > 1 }));
   }
 

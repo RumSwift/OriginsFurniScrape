@@ -123,19 +123,20 @@ export async function unpack(data, bundle, info, destRoot) {
         const idx = findAsset(`/bitmap/${bid}/idx`);
         if (idx) fs.writeFileSync(path.join(tmp, 'idx', `${fn}.idx`), idx);
       }
-      // The client ships pre-baked ink images per member (files.ink: {"8": ..., "36": ...}). Ink 8 is always "every exactly-white
-      // pixel transparent" (ink8AlphaPolicy), which the renderer reproduces; ink 36 (background transparent) works on the palette
-      // index and can differ from plain white keying, so that one is kept.
-      const ref = bm.files?.ink?.['36'];
-      const ink36 = (typeof ref === 'string' && assets.get(ref.replace(/^packed:/, ''))) || findAsset(`/bitmap/${bid}/ink36`);
-      let ink36File = null;
-      if (ink36) {
-        try { decodePng(ink36); ink36File = `sprites/${fn}.ink36.png`; fs.writeFileSync(path.join(tmp, ink36File), ink36); } catch { /* ignore a bad optional asset */ }
+      // The client ships pre-baked ink images per member (files.ink: {"8": ..., "36": ...}): the exact alpha it draws ink 8 (matte)
+      // and ink 36 (background transparent) sprites with. Kept next to the plain PNG.
+      const baked = {};
+      for (const k of ['8', '36']) {
+        const ref = bm.files?.ink?.[k];
+        const buf = (typeof ref === 'string' && assets.get(ref.replace(/^packed:/, ''))) || assets.get(`${castKey}/bitmap/${bid}/ink${k}`) || findAsset(`/bitmap/${bid}/ink${k}`);
+        if (!buf) continue;
+        try { decodePng(buf); baked[k] = `sprites/${fn}.ink${k}.png`; fs.writeFileSync(path.join(tmp, baked[k]), buf); } catch { /* ignore a bad optional asset */ }
       }
       const rp = bm.regPoint ?? [0, 0];
       meta.members[name] = { file: `sprites/${fn}.png`, regPoint: [Math.trunc(rp[0]), Math.trunc(rp[1])],
         width: Math.trunc(bm.width ?? 0), height: Math.trunc(bm.height ?? 0), palette: bm.paletteName ?? null,
-        bitDepth: typeof bm.bitDepth === 'number' ? bm.bitDepth : null, ink8: bm.ink8AlphaPolicy ?? null, ...(ink36File ? { ink36: ink36File } : {}) };
+        bitDepth: typeof bm.bitDepth === 'number' ? bm.bitDepth : null, ink8: bm.ink8AlphaPolicy ?? null,
+        ...(baked['36'] ? { ink36: baked['36'] } : {}), ...(baked['8'] ? { ink8File: baked['8'] } : {}) };
     }
     for (const fm of members.fields ?? []) {
       const name = String(fm.name);

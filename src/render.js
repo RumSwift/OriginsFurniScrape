@@ -15,7 +15,7 @@ const { GIFEncoder, quantize, applyPalette } = gifenc;
 // (Public-room shadow sprites use 20%, or the class's "sd" blend.)
 export const SHADOW_ALPHA = 0.3;
 /** Bump when output changes, so cached renders are not served stale. */
-export const RENDER_VERSION = 7;
+export const RENDER_VERSION = 8;
 
 // Director ink numbers -> how the client's renderer combines a sprite with what is below it.
 // 41 darken / 40 lighten are colour-filter inks: the sprite's own pixels times its bgColor (the part colour), drawn normally
@@ -84,20 +84,26 @@ function edgeMatte(img) {
 
 /**
  * Transparency + colour for one sprite, as the client does it:
- *  ink 8 (matte), 41/40 (darken/lighten, matted like 8): every exactly-white pixel is transparent ("exact-white-transparent",
- *    the policy the client's pre-baked ink-8 images use; 32-bit members only use their alpha channel);
- *  ink 36 (background transparent): the client's pre-baked ink-36 alpha when the bundle has one, else exact white;
- *  ink 0 (copy): opaque; other inks (add, subtract, ...): the image as is.
- * `color` (part colour / bgColor) multiplies the pixels. matte='edge' = only white connected to the border (old heuristic).
+ *  ink 8 (matte): the client's pre-baked ink-8 alpha when the bundle has one, else every exactly-white pixel transparent
+ *    (its "exact-white-transparent" policy; 32-bit members only use their alpha channel);
+ *  ink 41/40 (darken/lighten, colour filters): only white connected to the border is removed (createMatte), so white inside
+ *    the part stays and takes the part colour (white x colour = colour);
+ *  ink 36 (background transparent): the pre-baked ink-36 alpha when present, else exact white;
+ *  ink 0 (copy): opaque; add / subtract / lightest / darkest: exact white removed (a white backing would otherwise wash out).
+ * `color` (part colour / bgColor) multiplies the pixels. matte='edge' / 'exact' force one keying for every ink.
  */
-export function prepare(img, { ink = 8, color = null, blend = 100, matte = 'client', ink36 = null, depth32 = false } = {}) {
+export function prepare(img, { ink = 8, color = null, blend = 100, matte = 'client', ink36 = null, ink8 = null, depth32 = false } = {}) {
   const n = img.width * img.height, src = img.data, out = Buffer.from(src);
-  let alpha = null;
   const white = () => whiteMask(img).map((v) => (v ? 0 : 255));
-  if (matte === 'edge') alpha = ink === 0 ? null : ink === 36 ? white() : edgeMatte(img);
-  else if (matte === 'exact') alpha = ink === 0 ? null : white();
-  else if (ink === 36) alpha = ink36 && ink36.width === img.width && ink36.height === img.height ? Uint8Array.from({ length: n }, (_, i) => ink36.data[i * 4 + 3]) : white();
-  else if (ink === 8 || ink === 41 || ink === 40) alpha = depth32 ? null : white();
+  const baked = (b) => (b && b.width === img.width && b.height === img.height ? Uint8Array.from({ length: n }, (_, i) => b.data[i * 4 + 3]) : null);
+  let alpha = null;
+  if (ink === 0) alpha = null;
+  else if (matte === 'edge') alpha = ink === 36 ? white() : edgeMatte(img);
+  else if (matte === 'exact') alpha = white();
+  else if (ink === 36) alpha = baked(ink36) ?? white();
+  else if (ink === 41 || ink === 40) alpha = depth32 ? null : edgeMatte(img);
+  else if (ink === 8) alpha = baked(ink8) ?? (depth32 ? null : white());
+  else alpha = depth32 ? null : white();
   const tint = color && !(color[0] === 255 && color[1] === 255 && color[2] === 255);
   for (let i = 0; i < n; i++) {
     const o = i * 4;
@@ -138,9 +144,10 @@ const gap = (a, b) => Math.max(a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3
 async function memberImage(furni, name, { ink, color, blend, matte }) {
   const m = furni.member(name);
   if (!m) return null;
-  let ink36 = null;
-  if (ink === 36 && m.ink36) { try { ink36 = await loadPng(m.path.replace(/\.png$/, '.ink36.png')); } catch { ink36 = null; } }
-  return { m, img: prepare(await loadPng(m.path), { ink, color, blend, matte, ink36, depth32: m.bitDepth === 32 && !m.ink8 }) };
+  const baked = async (k) => { try { return await loadPng(m.path.replace(/\.png$/, `.ink${k}.png`)); } catch { return null; } };
+  const ink36 = ink === 36 && m.ink36 ? await baked(36) : null;
+  const ink8 = ink === 8 && m.ink8File ? await baked(8) : null;
+  return { m, img: prepare(await loadPng(m.path), { ink, color, blend, matte, ink36, ink8, depth32: m.bitDepth === 32 && !m.ink8 }) };
 }
 
 /**
@@ -201,6 +208,38 @@ function markOutliers(items) {
 /** Wall items (Item Object Class): leftwall = direction 2, rightwall = 4; layers in letter order with zshift. */
 async function wallLayout(furni, { direction, variant, step, frame, size, colors, mirror, matte, inks, outliers }) {
   const items = [];
+  const dm = furni.mode === 'extension' && !variant ? furni.dataModelFor(size) : null;
+  if (dm && dm.letters.length) {
+    // Item Object Extension Class: "<leftwall|rightwall> <class>_<layer>_<frame>" per data layer (the bare name when the state has
+    // no frame list); locZ = zshift + layer number
+    if (!step && !frame) step = extensionTimeline(dm, 1, { cls: furni.cls }).steps[0];
+    const side = direction >= 4 ? 'rightwall' : 'leftwall';
+    const head = `${size === 32 ? 's_' : ''}${side} ${furni.cls}`;
+    const props = furni.propsFor(size);
+    for (const [i, L] of dm.letters.entries()) {
+      const st = step?.layers?.[L];
+      const r = furni.resolve(st?.bare ? head : `${head}_${L}_${st?.frame ?? frame}`);
+      if (!r) continue;
+      const p = props[L] ?? {};
+      const ink = num(p.ink, 8);
+      const got = await memberImage(furni, r.name, { ink, color: colors[i] ?? null, blend: st?.blend ?? num(p.blend, 100), matte });
+      if (!got) continue;
+      let { img: im } = got;
+      const [rx, ry] = got.m.regPoint;
+      let x = -rx;
+      if (r.flip) { im = flipX(im); x = rx - im.width; }
+      const [sx, sy] = furni.locshift(L, side === 'leftwall' ? 2 : 4);
+      x += sx;
+      const t = tight(im);
+      if (!t.vis) continue;
+      items.push({ z: zshift(p, 0) + i + 1, li: i, layer: L, member: r.name, ink, img: im, x, y: -ry + sy, vis: t.vis, flipped: r.flip,
+        box: [x + t.minx, -ry + sy + t.miny, x + t.maxx + 1, -ry + sy + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
+    }
+    markOutliers(items);
+    items.sort((a, b) => a.z - b.z || a.li - b.li);
+    const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
+    return Object.assign(keep, { all: items, res: furni.resolveDirection(direction, size, mirror), dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
+  }
   await Promise.all(furni.layers.map(async (layer, li) => {
     const ov = step?.layers?.[layer] ?? null;
     if (ov?.visible === false) return;

@@ -43,9 +43,12 @@ Divider / Lamp / DragonLamp / Fan / Barrier scripts):
   State ids are the `.data` values (server stuffdata + 1). `loop`, `delay`, `blend`, `random` and `sequences` are simulated (random draws are seeded).
 - Behaviour scripts change frames by renaming the sprite's current member (its flip and position stay); the divider first tries
   `<...>_<dir>_1` (fresh flip, no locshift); the lamp re-derives `b`/`c` from layer `a`'s member and puts them 2 / 4 above it.
-- Inks: 8 (matte) and 41/40 make every exactly-white pixel transparent (the client's `exact-white-transparent` policy); 36 uses the bundle's
-  pre-baked ink-36 alpha when present; 41 is a colour filter (pixels times the part colour) drawn normally; 33/34 add, 35/38 subtract,
-  37 max, 39 min. `matte=edge` / `matte=exact` override this.
+- Inks: 8 (matte) uses the bundle's pre-baked ink-8 alpha (else every exactly-white pixel transparent, the client's policy); 36 the
+  pre-baked ink-36 alpha (else exact white); 41/40 are colour filters (pixels times the part colour, drawn normally) where only white
+  touching the border is removed, so white inside a part takes the colour; add/subtract/lightest/darkest drop exact white.
+  `matte=edge` / `matte=exact` override this.
+- Plants (Furniture Plant Class): stage N = `<class>_<layer>_0_<x>_<y>_<dir>_N`, built from the current member even when stage 0 is shared art.
+- Wall items with `.data` (Item Object Extension Class): `<leftwall|rightwall> <class>_<layer>_<frame>` per data layer.
 - Shadow: `<class>_sd_<dir>` else `<class>_sd`, at 30% (private rooms draw shadows through the shadow manager at blend 30).
 - The gallery shows the rotations the client can turn to (where layer `a` has a member); tick "Also show rotations..." for the rest.
 - Wall items: leftwall = 2, rightwall = 4, no tile shift.
@@ -53,6 +56,6 @@ Divider / Lamp / DragonLamp / Fan / Barrier scripts):
 
 ## Caveats
 - Colour variants multiply the part by the colour; `class*N` needs `FURNIDATA_URL`.
-- Scripts other than the five above (plants, fridges, TVs, trophies ...) are not emulated; their states are guessed from sprite frames (`states_inferred`).
+- Scripts other than the ones above (fridges, TVs, trophies, teleports ...) are not emulated; their states are guessed from sprite frames (`states_inferred`).
 - Ink 40 (lighten) is treated like 41; no furniture in the client's ink table uses it.
 - Download politeness: my automated fetch of the index host was refused under its robots rules, so confirm an acceptable rate with Sulake. Defaults: 2 workers, 0.3 s delay, backoff, stops on 401/403 or repeated failures.
