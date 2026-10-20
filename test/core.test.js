@@ -337,24 +337,23 @@ test('colours: variant entries in furnidata, hex or palette index', async () => 
   } finally { await app.close(); }
 });
 
-test('client inks: darken (41) is a colour filter drawn normally; matte keys every white pixel; ink 36 uses the pre-baked alpha', async () => {
+test('inks: darken (41) multiplies what is behind it; matte keeps white inside the sprite; ink 36 keys every white pixel', async () => {
   const app = await buildApp();
   try {
     // layers a, b only: d is never drawn because c is missing (the client stops at the first missing layer letter)
     const info = (await app.inject('/furni/ink/layers?direction=0')).json();
     assert.deepEqual(info.layers.map((l) => l.layer), ['a', 'b']);
     const d = decode((await app.inject('/render/ink?direction=0')).rawPayload);
-    assert.deepEqual(px(d, 0, 0), [128, 128, 128, 255]); // grey drawn over red, not multiplied into it
-    assert.deepEqual(px(d, 2, 2), [255, 255, 255, 255]); // ink 41: white inside the part stays (only border white is removed)
-    const tinted = decode((await app.inject('/render/ink?direction=0&colors=,00ff00')).rawPayload);
-    assert.deepEqual(px(tinted, 0, 0), [0, 128, 0, 255]); // grey x green part colour
-    assert.deepEqual(px(tinted, 2, 2), [0, 255, 0, 255]); // white x green
+    assert.deepEqual(px(d, 0, 0), [128, 0, 0, 255]);     // grey darkens the red behind it
+    assert.deepEqual(px(d, 2, 2), [255, 0, 0, 255]);     // white inside the part leaves the red as it is
     const m = decode((await app.inject('/render/mat?direction=0')).rawPayload);
     assert.deepEqual(px(m, 0, 0), [128, 128, 128, 255]);
-    assert.deepEqual(px(m, 2, 2), [255, 0, 0, 255]);      // ink 8: the white hole is transparent, red behind shows
-    const b = decode((await app.inject('/render/bgt?direction=0&outliers=keep&pad=0')).rawPayload);
-    assert.equal(px(b, 0, 0)[3], 0, 'left column transparent per the ink-36 asset');
-    assert.deepEqual(px(b, 1, 0), [255, 255, 255, 255], 'the rest of the white image kept');
+    assert.deepEqual(px(m, 2, 2), [255, 255, 255, 255]); // ink 8 matte: white enclosed by the sprite stays
+    const ex = decode((await app.inject('/render/mat?direction=0&matte=exact')).rawPayload);
+    assert.deepEqual(px(ex, 2, 2), [255, 0, 0, 255]);    // matte=exact keys it
+    assert.equal((await app.inject('/render/bgt?direction=0')).statusCode, 404); // all-white ink 36 sprite: nothing left
+    const b = decode((await app.inject('/render/bgt?direction=0&matte=baked')).rawPayload);
+    assert.deepEqual(px(b, 1, 0), [255, 255, 255, 255], 'matte=baked uses the client\'s pre-baked ink-36 alpha');
   } finally { await app.close(); }
 });
 

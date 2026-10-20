@@ -15,12 +15,11 @@ const { GIFEncoder, quantize, applyPalette } = gifenc;
 // (Public-room shadow sprites use 20%, or the class's "sd" blend.)
 export const SHADOW_ALPHA = 0.3;
 /** Bump when output changes, so cached renders are not served stale. */
-export const RENDER_VERSION = 8;
+export const RENDER_VERSION = 9;
 
-// Director ink numbers -> how the client's renderer combines a sprite with what is below it.
-// 41 darken / 40 lighten are colour-filter inks: the sprite's own pixels times its bgColor (the part colour), drawn normally
-// (the client's sprite shader: rgb * tint). 33/34 add, 35/38 subtract, 37 lightest (max), 39 darkest (min) work on the backdrop.
-const INK_MODE = { 33: 'add', 34: 'add', 35: 'sub', 38: 'sub', 37: 'lightest', 39: 'darkest' };
+// Director ink numbers -> how a sprite combines with what is below it: 33/34 add, 35/38 subtract, 37 lightest, 39 darkest,
+// 40 lighten (screen) and 41 darken (multiply: glass-like parts darken what is behind them).
+const INK_MODE = { 33: 'add', 34: 'add', 35: 'sub', 38: 'sub', 37: 'lightest', 39: 'darkest', 40: 'screen', 41: 'multiply' };
 export const inkMode = (ink) => INK_MODE[ink] ?? 'normal';
 
 /**
@@ -83,27 +82,22 @@ function edgeMatte(img) {
 }
 
 /**
- * Transparency + colour for one sprite, as the client does it:
- *  ink 8 (matte): the client's pre-baked ink-8 alpha when the bundle has one, else every exactly-white pixel transparent
- *    (its "exact-white-transparent" policy; 32-bit members only use their alpha channel);
- *  ink 41/40 (darken/lighten, colour filters): only white connected to the border is removed (createMatte), so white inside
- *    the part stays and takes the part colour (white x colour = colour);
- *  ink 36 (background transparent): the pre-baked ink-36 alpha when present, else exact white;
- *  ink 0 (copy): opaque; add / subtract / lightest / darkest: exact white removed (a white backing would otherwise wash out).
- * `color` (part colour / bgColor) multiplies the pixels. matte='edge' / 'exact' force one keying for every ink.
+ * Transparency + colour for one sprite (the keying used up to render version 6, which matched the client's look):
+ *  ink 36 (background transparent): every exactly-white pixel transparent; ink 0 (copy): opaque;
+ *  every other ink (8 matte, 41 darken, 33 add ...): white connected to the sprite's border is transparent, white inside stays.
+ * `color` (part colour / bgColor) multiplies the pixels. matte='exact' keys every white pixel for every ink instead.
+ * (ink36 / ink8: the client's pre-baked masks, only used with matte='baked'.)
  */
-export function prepare(img, { ink = 8, color = null, blend = 100, matte = 'client', ink36 = null, ink8 = null, depth32 = false } = {}) {
+export function prepare(img, { ink = 8, color = null, blend = 100, matte = 'edge', ink36 = null, ink8 = null } = {}) {
   const n = img.width * img.height, src = img.data, out = Buffer.from(src);
   const white = () => whiteMask(img).map((v) => (v ? 0 : 255));
   const baked = (b) => (b && b.width === img.width && b.height === img.height ? Uint8Array.from({ length: n }, (_, i) => b.data[i * 4 + 3]) : null);
-  let alpha = null;
+  let alpha;
   if (ink === 0) alpha = null;
-  else if (matte === 'edge') alpha = ink === 36 ? white() : edgeMatte(img);
-  else if (matte === 'exact') alpha = white();
-  else if (ink === 36) alpha = baked(ink36) ?? white();
-  else if (ink === 41 || ink === 40) alpha = depth32 ? null : edgeMatte(img);
-  else if (ink === 8) alpha = baked(ink8) ?? (depth32 ? null : white());
-  else alpha = depth32 ? null : white();
+  else if (matte === 'baked' && ink === 36 && baked(ink36)) alpha = baked(ink36);
+  else if (matte === 'baked' && ink === 8 && baked(ink8)) alpha = baked(ink8);
+  else if (ink === 36 || matte === 'exact') alpha = white();
+  else alpha = edgeMatte(img);
   const tint = color && !(color[0] === 255 && color[1] === 255 && color[2] === 255);
   for (let i = 0; i < n; i++) {
     const o = i * 4;
@@ -145,9 +139,9 @@ async function memberImage(furni, name, { ink, color, blend, matte }) {
   const m = furni.member(name);
   if (!m) return null;
   const baked = async (k) => { try { return await loadPng(m.path.replace(/\.png$/, `.ink${k}.png`)); } catch { return null; } };
-  const ink36 = ink === 36 && m.ink36 ? await baked(36) : null;
-  const ink8 = ink === 8 && m.ink8File ? await baked(8) : null;
-  return { m, img: prepare(await loadPng(m.path), { ink, color, blend, matte, ink36, ink8, depth32: m.bitDepth === 32 && !m.ink8 }) };
+  const ink36 = matte === 'baked' && ink === 36 && m.ink36 ? await baked(36) : null;
+  const ink8 = matte === 'baked' && ink === 8 && m.ink8File ? await baked(8) : null;
+  return { m, img: prepare(await loadPng(m.path), { ink, color, blend, matte, ink36, ink8 }) };
 }
 
 /**
@@ -156,7 +150,7 @@ async function memberImage(furni, name, { ink, color, blend, matte }) {
  * Floor items go through the client emulation (client.js); wall items use their two orientations.
  * With outliers='hide' (default) a tiny sprite (<64 visible px) lying >60px away from the rest is dropped: scripted-effect anchors.
  */
-export async function layout(furni, { direction = 2, variant = null, step = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'client', inks = 'client', outliers = 'hide' } = {}) {
+export async function layout(furni, { direction = 2, variant = null, step = null, frame = 0, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', outliers = 'hide' } = {}) {
   if (furni.isWall) return wallLayout(furni, { direction, variant, step, frame, size, colors, mirror, matte, inks, outliers });
   const items = [];
   if (!step && furni.mode === 'extension' && !frame) step = extensionTimeline(furni.dataModelFor(size), 1, { cls: furni.cls }).steps[0]; // stuffdata "" -> state 1
@@ -276,6 +270,8 @@ const CH = {
   sub: (d, s) => Math.max(0, d - s),
   lightest: (d, s) => Math.max(d, s),
   darkest: (d, s) => Math.min(d, s),
+  screen: (d, s) => 255 - ((255 - d) * (255 - s)) / 255,
+  multiply: (d, s) => (d * s) / 255,
 };
 
 /**
@@ -287,7 +283,7 @@ function blendInto(out, d, sr, sg, sb, sa, mode) {
   const a = sa / 255, daN = out[d + 3] / 255, op = CH[mode];
   const maxc = Math.max(sr, sg, sb);
   let ue, ur, ug, ub;
-  if (mode === 'add') {
+  if (mode === 'add' || mode === 'screen') {
     if (!maxc && !daN) return;
     ue = (maxc / 255) * a; ur = (sr * 255) / (maxc || 1); ug = (sg * 255) / (maxc || 1); ub = (sb * 255) / (maxc || 1);
   } else if (mode === 'sub') { ue = (maxc / 255) * a; ur = ug = ub = 0; }
@@ -339,7 +335,7 @@ export async function render(furni, { pad = 0, bg = null, ...opts } = {}) {
 }
 
 /** Animation of a state: one image per timeline step, all on a shared canvas so nothing jitters. Each frame carries `ticks`. */
-export async function renderFrames(furni, { direction = 2, variant = null, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'client', inks = 'client', outliers = 'hide', pad = 0, bg = null, maxFrames = 96 } = {}) {
+export async function renderFrames(furni, { direction = 2, variant = null, state = null, size = 64, colors = [], shadow = false, mirror = true, matte = 'edge', inks = 'client', outliers = 'hide', pad = 0, bg = null, maxFrames = 96 } = {}) {
   const steps = timeline(furni, state).steps.slice(0, maxFrames);
   const sets = [];
   for (const step of steps) sets.push(await layout(furni, { direction, variant, step, size, colors, shadow, mirror, matte, inks, outliers }));

@@ -160,7 +160,7 @@ export async function buildApp({ logger = false } = {}) {
     const size = int(q, 'size', 64, 1, 1000);
     if (size !== 32 && size !== 64) throw new HttpError(400, 'size must be 32 or 64');
     const shadow = bool(q, 'shadow', false), mirror = bool(q, 'mirror', true);
-    const matte = oneOf(q, 'matte', 'client', ['client', 'edge', 'exact']);
+    const matte = oneOf(q, 'matte', 'edge', ['edge', 'exact', 'baked']);
     const scale = int(q, 'scale', 1, 1, 4), pad = int(q, 'pad', 0, 0, 64), fps = int(q, 'fps', TICKS_PER_SECOND, 1, 60); // ticks per second; the client runs at 15
     const format = oneOf(q, 'format', 'png', ['png', 'gif']);
     const outliers = oneOf(q, 'outliers', 'hide', ['hide', 'keep']);    // hide = drop tiny far-away marker sprites

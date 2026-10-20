@@ -43,10 +43,9 @@ Divider / Lamp / DragonLamp / Fan / Barrier scripts):
   State ids are the `.data` values (server stuffdata + 1). `loop`, `delay`, `blend`, `random` and `sequences` are simulated (random draws are seeded).
 - Behaviour scripts change frames by renaming the sprite's current member (its flip and position stay); the divider first tries
   `<...>_<dir>_1` (fresh flip, no locshift); the lamp re-derives `b`/`c` from layer `a`'s member and puts them 2 / 4 above it.
-- Inks: 8 (matte) uses the bundle's pre-baked ink-8 alpha (else every exactly-white pixel transparent, the client's policy); 36 the
-  pre-baked ink-36 alpha (else exact white); 41/40 are colour filters (pixels times the part colour, drawn normally) where only white
-  touching the border is removed, so white inside a part takes the colour; add/subtract/lightest/darkest drop exact white.
-  `matte=edge` / `matte=exact` override this.
+- Inks: ink 36 keys every exactly-white pixel, ink 0 is opaque, every other ink keys only white touching the sprite's border.
+  41 darken multiplies what is behind it (glass-like parts), 40 lighten screens, 33/34 add, 35/38 subtract, 37 max, 39 min.
+  `matte=exact` keys all white for every ink; `matte=baked` uses the client's pre-baked ink-8 / ink-36 masks from the bundle.
 - Plants (Furniture Plant Class): stage N = `<class>_<layer>_0_<x>_<y>_<dir>_N`, built from the current member even when stage 0 is shared art.
 - Wall items with `.data` (Item Object Extension Class): `<leftwall|rightwall> <class>_<layer>_<frame>` per data layer.
 - Shadow: `<class>_sd_<dir>` else `<class>_sd`, at 30% (private rooms draw shadows through the shadow manager at blend 30).
