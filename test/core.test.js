@@ -131,6 +131,8 @@ async function makeFixtures() {
   // wfx: wall item with .data (Item Object Extension): layer a always frame 1, layer b frame 0 / 1 by state
   addBundle(index, 'wfx', [['leftwall wfx_a_1', red, [2, 4]], ['leftwall wfx_b_0', blue, [2, 4]], ['leftwall wfx_b_1', green, [2, 4]], ['leftwall wfx_a_0', pngFn(4, 4, () => [9, 9, 9, 255]), [9, 9]]],
     { 'wfx.data': '[states:[1,2], layers:[ a:[ [ frames:[ 1 ] ] ], b:[ [ frames:[ 0 ] ], [ frames:[ 1 ] ] ] ]]' });
+  // sdz: a layer with a hugely negative zshift must still be drawn above the shadow
+  addBundle(index, 'sdz', [['sdz_a_0_1_1_0_0', red, [2, 4]], ['sdz_sd', shadow, [3, 4]]], { 'sdz.props': '[#a: [#zshift: [-99999999999]]]' });
   // bgt: ink 36 with the client's pre-baked alpha (only the left column transparent, although the whole image is white)
   addBundle(index, 'bgt', [['bgt_a_0_1_1_0_0', pngFn(4, 4, () => [255, 255, 255, 255]), [2, 4], pngFn(4, 4, (x) => [255, 255, 255, x === 0 ? 0 : 255])]],
     { 'bgt.props': '[#a: [#ink: 36]]' });
@@ -146,9 +148,9 @@ const px = (d, x, y) => [...d.data.subarray((y * d.width + x) * 4, (y * d.width 
 test('sync from a local source', async () => {
   await makeFixtures();
   const st = await sync.run();
-  assert.equal(st.downloaded, 19); assert.equal(st.failed, 0);
+  assert.equal(st.downloaded, 20); assert.equal(st.failed, 0);
   assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'furni/tst/sprites/tst_a_0_1_1_2_0.png')));
-  assert.equal((await sync.run()).skipped, 19); // second run is a no-op
+  assert.equal((await sync.run()).skipped, 20); // second run is a no-op
 });
 
 test('API: info, layering, colour, animation, validation', async () => {
@@ -159,7 +161,7 @@ test('API: info, layering, colour, animation, validation', async () => {
     assert.deepEqual(info.directions, [0, 2]);
     assert.deepEqual(info.states, [1, 2]); // .data state values (stuffdata + 1)
     assert.equal(info.rotations[64][4].kind, 'fallback'); // no entry for 4: the client shows direction 0
-    assert.equal((await app.inject('/furni/new?days=1')).json().count, 19);
+    assert.equal((await app.inject('/furni/new?days=1')).json().count, 20);
 
     const r = await app.inject('/render/tst?direction=2');
     assert.equal(r.statusCode, 200);
@@ -388,5 +390,16 @@ test('wall items with .data: "<side> <class>_<layer>_<frame>" per data layer', a
     assert.deepEqual(await lay(''), ['leftwall wfx_a_1', 'leftwall wfx_b_0']);
     assert.deepEqual(await lay('&state=2'), ['leftwall wfx_a_1', 'leftwall wfx_b_1']);
     assert.deepEqual((await app.inject('/furni/wfx')).json().states, [1, 2]);
+  } finally { await app.close(); }
+});
+
+test('shadows are always drawn first, under every layer', async () => {
+  const app = await buildApp();
+  try {
+    const order = (await app.inject('/furni/sdz/layers?direction=0&shadow=1')).json().layers.map((l) => l.layer);
+    assert.deepEqual(order, ['shadow', 'a']);
+    const d = decode((await app.inject('/render/sdz?direction=0&shadow=1')).rawPayload);
+    const o = 3; // shadow reg x 3 -> canvas origin x 3; layer a spans x -2..2, so canvas column 1..4 is red on top of the shadow
+    assert.deepEqual(px(d, o - 2, 0), [255, 0, 0, 255]);
   } finally { await app.close(); }
 });

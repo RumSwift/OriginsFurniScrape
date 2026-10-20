@@ -15,7 +15,7 @@ const { GIFEncoder, quantize, applyPalette } = gifenc;
 // (Public-room shadow sprites use 20%, or the class's "sd" blend.)
 export const SHADOW_ALPHA = 0.3;
 /** Bump when output changes, so cached renders are not served stale. */
-export const RENDER_VERSION = 9;
+export const RENDER_VERSION = 10;
 
 // Director ink numbers -> how a sprite combines with what is below it: 33/34 add, 35/38 subtract, 37 lightest, 39 darkest,
 // 40 lighten (screen) and 41 darken (multiply: glass-like parts darken what is behind them).
@@ -187,10 +187,13 @@ export async function layout(furni, { direction = 2, variant = null, step = null
       items.push({ z: -1e9, li: -1, layer: 'shadow', member: sol.shadow.name, ink: 8, img: im, x, y: -ry, vis: tight(im).vis, box: null, mode: 'normal', outlier: false });
     }
   }
-  items.sort((a, b) => a.z - b.z || a.li - b.li);
+  items.sort(drawOrder);
   const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
   return Object.assign(keep, { all: items, res: furni.resolveDirection(direction, size, mirror), dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
 }
+
+/** Shadows always go to the bottom, whatever the layers' z-shifts are; then z, then layer order. */
+const drawOrder = (a, b) => (b.layer === 'shadow') - (a.layer === 'shadow') || a.z - b.z || a.li - b.li;
 
 function markOutliers(items) {
   const big = items.filter((i) => i.vis >= OUTLIER_MAX_PIXELS);
@@ -230,7 +233,7 @@ async function wallLayout(furni, { direction, variant, step, frame, size, colors
         box: [x + t.minx, -ry + sy + t.miny, x + t.maxx + 1, -ry + sy + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
     }
     markOutliers(items);
-    items.sort((a, b) => a.z - b.z || a.li - b.li);
+    items.sort(drawOrder);
     const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
     return Object.assign(keep, { all: items, res: furni.resolveDirection(direction, size, mirror), dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
   }
@@ -255,7 +258,7 @@ async function wallLayout(furni, { direction, variant, step, frame, size, colors
       box: [x + t.minx, -ry + sy + t.miny, x + t.maxx + 1, -ry + sy + t.maxy + 1], mode: inks === 'client' ? inkMode(ink) : 'normal', outlier: false });
   }));
   markOutliers(items);
-  items.sort((a, b) => a.z - b.z || a.li - b.li);
+  items.sort(drawOrder);
   const keep = items.filter((i) => !(i.outlier && outliers === 'hide'));
   return Object.assign(keep, { all: items, res: furni.resolveDirection(direction, size, mirror), dropped: items.filter((i) => i.outlier && outliers === 'hide').map((i) => i.layer) });
 }
