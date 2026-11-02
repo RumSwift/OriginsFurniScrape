@@ -15,7 +15,7 @@ const { GIFEncoder, quantize, applyPalette } = gifenc;
 // (Public-room shadow sprites use 20%, or the class's "sd" blend.)
 export const SHADOW_ALPHA = 0.3;
 /** Bump when output changes, so cached renders are not served stale. */
-export const RENDER_VERSION = 10;
+export const RENDER_VERSION = 11;
 
 // Director ink numbers -> how a sprite combines with what is below it: 33/34 add, 35/38 subtract, 37 lightest, 39 darkest,
 // 40 lighten (screen) and 41 darken (multiply: glass-like parts darken what is behind them).

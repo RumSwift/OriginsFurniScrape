@@ -22,6 +22,7 @@
   .meta { color:var(--mut); font-size:12px; margin-top:4px; }
   .meta a { color:var(--acc); text-decoration:none; }
   .cell { display:flex; flex-wrap:wrap; gap:8px; align-content:flex-start; }
+  .sw { display:inline-block; width:9px; height:9px; margin-left:3px; border:1px solid #0006; vertical-align:middle; }
   .cell h3 { flex-basis:100%; margin:0; font-size:11px; font-weight:600; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }
   figure { margin:0; text-align:center; }
   figure a { display:flex; align-items:flex-end; justify-content:center; min-width:48px; min-height:48px; border-radius:6px; background:var(--cell); padding:6px; }
@@ -124,7 +125,21 @@
       el('br'), `bundle ${info.bundle} r${info.revision} · `,
       el('a', { href: `${API}/furni/${encodeURIComponent(cls)}/layers?direction=2`, target: '_blank', rel: 'noopener' }, 'layers'), ' · ',
       el('a', { href: `${API}/furni/${encodeURIComponent(cls)}`, target: '_blank', rel: 'noopener' }, 'json'));
-    r.el.replaceChildren(el('div', {}, el('div', { class: 'name' }, cls), meta), dirCell, stCell);
+    // colour variants from furnidata / external texts (name + part colours); rendered like the client colours them
+    const vars = info.variants || [];
+    if (vars.length) {
+      const vd = native.includes(2) ? 2 : native[0];
+      stCell.append(el('h3', {}, `Colour variants (${vars.length})`));
+      for (const v of vars.slice(0, 48)) {
+        const sw = (v.hex || []).map((h, i) => [h, (v.colors || [])[i]]).filter(([h]) => h && h !== '#ffffff').slice(0, 4).map(([h, c]) => el('span', { class: 'sw', style: `background:${h}`, title: `${c} = ${h}` }));
+        const f = fig(v.class, `*${v.variant}${v.name ? ' · ' + v.name : ''}`, { ...base, direction: vd }, false);
+        f.querySelector('figcaption').append(...sw);
+        stCell.append(f);
+      }
+    }
+    const title = el('div', { class: 'name' }, cls);
+    const sub = info.name ? el('div', { class: 'meta' }, info.name, info.description ? el('br') : '', info.description || '') : '';
+    r.el.replaceChildren(el('div', {}, title, sub, meta), dirCell, stCell);
   }
 
   async function load(cls) {

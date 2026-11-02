@@ -8,6 +8,7 @@ import { safeFile } from './sync.js';
 import { aliasNamesFor, aliasOf, classChain, parseWallName, wallNamesFor } from './aliasdb.js';
 import { TICKS_PER_SECOND, behaviorOf, behaviorStates, timeline } from './behavior.js';
 import { dataModel, dataStates, solveBase } from './client.js';
+import { allVariants } from './gamedata.js';
 
 export const CLS_RE = /^[A-Za-z0-9][A-Za-z0-9_.*\-]{0,127}$/;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -358,28 +359,9 @@ export function get(cls) {
   return { furni: f, variant };
 }
 
-// ---------------------------------------------------------------- optional furnidata (names, colours)
-const fd = { t: 0, d: {} };
+// ---------------------------------------------------------------- furnidata (kept for callers): class -> furnidata entry
 export async function furnidata() {
-  if (!config.FURNIDATA_URL) return {};
-  if (Date.now() - fd.t < 86400_000 && Object.keys(fd.d).length) return fd.d;
-  const cache = path.join(config.DATA_DIR, 'furnidata.json');
-  try {
-    let raw;
-    if (/^https?:/.test(config.FURNIDATA_URL)) {
-      const stale = !fs.existsSync(cache) || Date.now() - fs.statSync(cache).mtimeMs > 86400_000;
-      if (stale) {
-        const r = await fetch(config.FURNIDATA_URL, { headers: { 'User-Agent': config.SYNC_USER_AGENT }, signal: AbortSignal.timeout(60_000) });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        fs.writeFileSync(cache, Buffer.from(await r.arrayBuffer()));
-      }
-      raw = fs.readFileSync(cache);
-    } else raw = fs.readFileSync(config.FURNIDATA_URL);
-    const j = JSON.parse(raw.toString('utf8'));
-    const d = {};
-    for (const key of ['roomitemtypes', 'wallitemtypes']) for (const x of j[key]?.furnitype ?? []) d[x.classname] = x;
-    fd.d = d;
-  } catch { /* keep whatever we had */ }
-  fd.t = Date.now();
-  return fd.d;
+  const out = {};
+  for (const r of allVariants()) if (r.furnidata) out[r.class] = r.furnidata;
+  return out;
 }

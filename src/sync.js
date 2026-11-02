@@ -9,6 +9,7 @@ import { config, indexUrl } from './config.js';
 import * as D from './db.js';
 import { BundleError, parseBundle } from './hcb.js';
 import { decodePng } from './render.js';
+import { refresh as refreshGamedata } from './gamedata.js';
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$/;
 const PATH_RE = /^furniture\/[A-Za-z0-9][A-Za-z0-9_.\-]*\/\d+-[0-9a-f]{12}\.hcb$/;
@@ -30,7 +31,7 @@ const isRemote = (u) => /^https?:\/\//.test(u);
 const localPath = (u) => (u.startsWith('file://') ? fileURLToPath(u) : u);
 
 /** GET with backoff. Returns { status, body, etag }. 304 -> empty body. */
-async function httpGet(url, etag = null, retries = 4) {
+export async function httpGet(url, etag = null, retries = 4) {
   let delay = 2000;
   for (let attempt = 0; attempt <= retries; attempt++) {
     let r;
@@ -182,6 +183,10 @@ export async function run({ only = null, force = false } = {}) {
   for (const d of [config.DATA_DIR, config.FURNI_DIR, config.RAW_DIR, config.CACHE_DIR]) fs.mkdirSync(d, { recursive: true });
   Object.assign(STATUS, { running: true, last_started: Date.now() / 1000, last_error: null, downloaded: 0, skipped: 0, failed: 0, total: 0 });
   try {
+    // names, descriptions and colour variants (texts + furnidata) change without the bundle index changing
+    if (!only) {
+      try { await refreshGamedata(); } catch (e) { log('error', `gamedata: ${e.message}`); }
+    }
     const { idx, etag, unchanged } = await loadIndex(force);
     if (unchanged && !only) { log('info', 'index unchanged (304)'); return STATUS; }
     const { bundles, classes } = validateIndex(idx);

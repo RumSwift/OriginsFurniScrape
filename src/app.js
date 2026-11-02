@@ -11,6 +11,7 @@ import * as R from './render.js';
 import { TICKS_PER_SECOND, stepAt } from './behavior.js';
 import * as store from './store.js';
 import * as sync from './sync.js';
+import * as gamedata from './gamedata.js';
 
 class HttpError extends Error {
   constructor(status, detail) { super(detail); this.status = status; }
@@ -48,18 +49,30 @@ function lookup(cls) {
   return { furni, variant };
 }
 
+/**
+ * Part colours for a render: ?colors= wins; otherwise what the client gets from furnidata - the variant's own entry
+ * ('rare_dragonlamp*7'), else the class's entry (plain classes have part colours too). One colour per layer, '#rrggbb' or a
+ * palette index.
+ */
 async function colorsFor(cls, variant, colorsParam) {
   if (colorsParam) {
     try { return R.parseColors(colorsParam); } catch (e) { throw new HttpError(400, e.message); }
   }
-  if (variant) {
-    const all = await store.furnidata();
-    const fd = all[`${cls}*${variant}`] ?? all[cls]; // furnidata lists each colour variant as its own entry: 'rare_dragonlamp*2'
-    const pc = fd?.partcolors?.color;
-    if (Array.isArray(pc)) return pc.map(R.hexToRgb);
-  }
-  return [];
+  const pc = gamedata.partColors(cls, variant);
+  return pc ? pc.map(R.hexToRgb) : [];
 }
+
+const hasBundle = (base) => !!store.lookupBundle(base);
+/** Part colours as hex ('#rrggbb'), palette indices resolved through the client's default palette; null = no colour. */
+const toHex = (list) => (list || []).map((c) => {
+  const rgb = R.hexToRgb(c);
+  return rgb ? `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}` : null;
+});
+const variantOut = (r) => ({
+  class: r.class, base: r.base, variant: r.variant, kind: r.kind, name: r.name, description: r.description, colors: r.colors, hex: toHex(r.colors),
+  sources: r.sources, has_assets: hasBundle(r.base),
+  render: hasBundle(r.base) ? `/render/${encodeURIComponent(r.class)}` : null,
+});
 
 // ---- disk render cache: <key>.<ext> + <key>.json (origin)
 async function cached(key, ext, make) {
@@ -99,7 +112,7 @@ export async function buildApp({ logger = false } = {}) {
     return reply.code(500).send({ detail: 'internal error' });
   });
   app.setNotFoundHandler((req, reply) => reply.code(404).send({ detail: 'Not Found' }));
-  sync.hooks.onFinished = () => { store.clearCache(); R.clearCache(); };
+  sync.hooks.onFinished = () => { store.clearCache(); R.clearCache(); gamedata.clearGamedataCache(); };
 
   const galleryHtml = fs.readFileSync(fileURLToPath(new URL('./gallery.html', import.meta.url)));
   app.get('/gallery', async (req, reply) => reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(galleryHtml));
@@ -130,11 +143,41 @@ export async function buildApp({ logger = false } = {}) {
   app.get('/furni/:cls', async (req) => {
     const { furni, variant } = lookup(req.params.cls);
     const info = furni.info();
-    const fdAll = await store.furnidata();
-    const fd = fdAll[req.params.cls] ?? fdAll[furni.cls];
-    if (fd) info.furnidata = Object.fromEntries(['id', 'name', 'description', 'xdim', 'ydim', 'category', 'partcolors'].map((k) => [k, fd[k] ?? null]));
+    const e = gamedata.entry(req.params.cls) ?? (variant === null ? null : gamedata.entry(furni.cls));
     info.variant = variant;
+    info.name = e?.name ?? null;
+    info.description = e?.description ?? null;
+    info.colors = gamedata.partColors(furni.cls, variant);
+    info.hex = info.colors ? toHex(info.colors) : null;
+    if (e?.furnidata) info.furnidata = e.furnidata;
+    info.variants = gamedata.variantsOf(furni.cls).filter((r) => r.variant !== null).map(variantOut);
     return info;
+  });
+
+  /** Every colour variant of a class with its name, description and part colours. */
+  app.get('/furni/:cls/variants', async (req) => {
+    const base = store.splitClass(req.params.cls)[0];
+    const rows = gamedata.variantsOf(base);
+    if (!rows.length && !hasBundle(base)) throw new HttpError(404, `unknown furniture class '${base}'`);
+    return { class: base, count: rows.length, variants: rows.map(variantOut) };
+  });
+
+  /**
+   * Everything the game data knows about: classes and colour variants (also ones whose graphics are not out yet).
+   * ?q= substring of class or name, ?only=variants|classes, ?assets=1 only those with graphics, limit/offset.
+   */
+  app.get('/variants', async (req) => {
+    const q = req.query;
+    const text = strq(q, 'q', 100).toLowerCase();
+    const only = oneOf(q, 'only', 'all', ['all', 'variants', 'classes']);
+    const assets = bool(q, 'assets', false);
+    const limit = int(q, 'limit', 200, 1, 5000), offset = int(q, 'offset', 0, 0, 1e9);
+    let rows = gamedata.allVariants()
+      .filter((r) => only === 'all' || (only === 'variants' ? r.variant !== null : r.variant === null))
+      .filter((r) => !text || r.class.toLowerCase().includes(text) || (r.name ?? '').toLowerCase().includes(text));
+    if (assets) rows = rows.filter((r) => hasBundle(r.base));
+    rows.sort((a, b) => a.base.localeCompare(b.base) || (a.variant === null ? -1 : b.variant === null ? 1 : (Number(a.variant) - Number(b.variant)) || String(a.variant).localeCompare(String(b.variant))));
+    return { total: rows.length, count: Math.min(limit, Math.max(0, rows.length - offset)), items: rows.slice(offset, offset + limit).map(variantOut), status: gamedata.GAMEDATA_STATUS };
   });
 
   /** Debug: every layer's member, registration point, ink, visible pixels and whether it was dropped as an outlier. */
@@ -186,6 +229,52 @@ export async function buildApp({ logger = false } = {}) {
   });
 
   /** All native directions side by side. */
+  /**
+   * Every colour variant of a class on one sheet, coloured like the client: PNG grid (variant order in X-Variants), or
+   * ?format=html for a labelled page (variant number, name, colour swatches). ?direction= ?state= ?size= ?scale= ?bg=hex ?cols=
+   */
+  app.get('/furni/:cls/variants/sheet', async (req, reply) => {
+    const q = req.query;
+    const base = store.splitClass(req.params.cls)[0];
+    const direction = int(q, 'direction', 2, 0, 7), size = int(q, 'size', 64, 1, 1000);
+    if (size !== 32 && size !== 64) throw new HttpError(400, 'size must be 32 or 64');
+    const state = q.state === undefined ? null : int(q, 'state', null, 0, 9999);
+    const scale = int(q, 'scale', 1, 1, 3), cols = int(q, 'cols', 8, 1, 32);
+    const format = oneOf(q, 'format', 'png', ['png', 'html']);
+    const bgParam = strq(q, 'bg', 6);
+    if (bgParam && !/^[0-9a-f]{6}$/i.test(bgParam)) throw new HttpError(400, 'bg must be a 6-digit hex colour');
+    const { furni } = lookup(base);
+    const rows = gamedata.variantsOf(base).filter((r) => r.variant !== null);
+    if (!rows.length) throw new HttpError(404, `no colour variants known for '${base}' (has the game data been synced?)`);
+    if (format === 'html') {
+      const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const qs = new URLSearchParams({ direction, size, scale: Math.max(2, scale), ...(state === null ? {} : { state }), ...(bgParam ? { bg: bgParam } : {}) });
+      const cells = rows.map((r) => {
+        const sw = toHex(r.colors).map((h, i) => (h && h !== '#ffffff' ? `<i style="background:${h}" title="${esc(r.colors[i])} = ${h}"></i>` : '')).join('');
+        return `<figure><img src="../../../render/${encodeURIComponent(r.class)}?${qs}" alt="${esc(r.class)}" loading="lazy"><figcaption><b>*${esc(r.variant)}</b> ${esc(r.name ?? '')}<br>${sw}</figcaption></figure>`;
+      }).join('');
+      return reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(`<!doctype html><meta charset="utf-8"><title>${esc(base)} variants</title>
+<style>body{font:13px system-ui;background:#1b1d22;color:#ddd;margin:16px}h1{font-size:16px}main{display:flex;flex-wrap:wrap;gap:10px}
+figure{margin:0;background:#262930;border:1px solid #333;border-radius:6px;padding:8px;text-align:center;width:170px}
+img{image-rendering:pixelated;max-width:100%}figcaption{margin-top:4px}i{display:inline-block;width:12px;height:12px;margin:2px;border:1px solid #0008}</style>
+<h1>${esc(base)} · ${rows.length} colour variants</h1><main>${cells}</main>`);
+    }
+    const bg = bgParam ? R.hexToRgb(bgParam) : null;
+    const shots = [];
+    for (const r of rows) {
+      const colors = await colorsFor(base, r.variant, '');
+      const s = await R.render(furni, { direction, variant: r.variant, size, ...(state === null ? {} : { step: stepAt(furni, state, 0) }), colors, shadow: false, bg: null });
+      if (s) shots.push({ r, s });
+    }
+    if (!shots.length) throw new HttpError(404, 'nothing to render');
+    const cw = Math.max(...shots.map((x) => x.s.img.width)) + 8, ch = Math.max(...shots.map((x) => x.s.img.height)) + 8;
+    const n = Math.min(cols, shots.length), W = n * cw, H = Math.ceil(shots.length / n) * ch;
+    const parts = shots.map((x, i) => ({ img: x.s.img, x: (i % n) * cw + Math.floor((cw - x.s.img.width) / 2), y: Math.floor(i / n) * ch + (ch - 4 - x.s.img.height) }));
+    const sheet = R.compose(parts, [0, 0, W, H], 0, bg);
+    const { data, mime } = await R.encode([sheet], 'png', 8, scale, bg);
+    return reply.header('Cache-Control', 'public, max-age=3600').header('X-Variants', shots.map((x) => x.r.class).join(',')).type(mime).send(data);
+  });
+
   app.get('/render/:cls/sheet', async (req, reply) => {
     const q = req.query;
     const state = q.state === undefined ? null : int(q, 'state', null, 0, 9999);
@@ -228,6 +317,7 @@ export async function buildApp({ logger = false } = {}) {
     return { started: true };
   });
   app.post('/admin/reunpack', { preHandler: admin }, async () => sync.reunpackAll());
+  app.post('/admin/gamedata', { preHandler: admin }, async () => gamedata.refresh());
   app.get('/admin/status', { preHandler: admin }, async () => ({ sync: sync.STATUS, last: JSON.parse(D.kvGet('last_sync', 'null')) }));
 
   return app;

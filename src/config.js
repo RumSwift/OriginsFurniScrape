@@ -30,7 +30,11 @@ function compute() {
     KEEP_RAW: bool('KEEP_RAW', true), // keep downloaded .hcb files
     KEEP_IDX: bool('KEEP_IDX', false), // also write raw 8-bit indexed pixel data
     ADMIN_TOKEN: e.ADMIN_TOKEN || '', // empty = admin endpoints disabled
+    // furnidata (colour variants + part colours), names/descriptions; refreshed on every sync. FURNIDATA_URL empty = built like
+    // the client does: https:// + url.prefix (from external_variables) + /gamedata/furnidata_json/1. 'none' disables a source.
     FURNIDATA_URL: e.FURNIDATA_URL || '',
+    EXTERNAL_TEXTS_URL: e.EXTERNAL_TEXTS_URL || 'http://origins-gamedata.habbo.com/external_texts/1',
+    EXTERNAL_VARIABLES_URL: e.EXTERNAL_VARIABLES_URL || 'http://origins-gamedata.habbo.com/external_variables/1',
     CORS_ORIGINS: (e.CORS_ORIGINS || '*').split(',').map((s) => s.trim()).filter(Boolean),
     PORT: Math.trunc(num('PORT', 8000)),
     FURNI_DIR: path.join(DATA_DIR, 'furni'),

@@ -53,6 +53,20 @@ Divider / Lamp / DragonLamp / Fan / Barrier scripts):
 - Wall items: leftwall = 2, rightwall = 4, no tile shift.
 - A re-unpack (`POST /admin/reunpack`) also clears the render cache.
 
+
+## Names, descriptions and colour variants (game data)
+Every sync (and `POST /admin/gamedata`) downloads what the client loads besides the bundles, keeping the last good copy in
+`DATA_DIR/gamedata/`:
+- `external_texts` (`EXTERNAL_TEXTS_URL`): `furni_<class>[*N]_name/_desc`, `wallitem_<class>_…`, `poster_<N>_…`
+- `external_variables` (`EXTERNAL_VARIABLES_URL`): `url.prefix`, the hotel host
+- furnidata (`FURNIDATA_URL`, default built like the client: `https://<url.prefix>/gamedata/furnidata_json/1`): every class and
+  colour variant with its `partcolors` - one colour per layer (`#rrggbb` or a palette index) that the client sets as the layer's
+  bgColor. Renders use it automatically: `/render/rare_dragonlamp*7`, and plain classes get their own part colours too.
+Set any of the three to `none` to skip it.
+- `GET /furni/{class}`: adds `name`, `description`, `colors`/`hex` and `variants` (every `*N` with name, colours, render URL)
+- `GET /furni/{class}/variants`, `GET /variants?q=&only=variants|classes&assets=1&limit=&offset=` (everything the game data knows,
+  including variants whose graphics are not out yet; `has_assets` says whether it can be rendered)
+
 ## Caveats
 - Colour variants multiply the part by the colour; `class*N` needs `FURNIDATA_URL`.
 - Scripts other than the ones above (fridges, TVs, trophies, teleports ...) are not emulated; their states are guessed from sprite frames (`states_inferred`).

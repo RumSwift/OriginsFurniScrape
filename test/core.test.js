@@ -28,6 +28,9 @@ process.env.CLIENT_DATA_DIR = cdata;
 fs.writeFileSync(path.join(cdata, 'systemwin.json'), JSON.stringify({ colors: Array.from({ length: 256 }, (_, i) => (i === 6 ? [255, 0, 0] : [i, 0, 0])) }));
 fs.writeFileSync(path.join(tmp, 'furnidata.json'), JSON.stringify({ roomitemtypes: { furnitype: [{ classname: 'tst*2', partcolors: { color: ['', '#00ff00'] } }, { classname: 'tst*3', partcolors: { color: ['', '6'] } }] } }));
 process.env.FURNIDATA_URL = path.join(tmp, 'furnidata.json');
+fs.writeFileSync(path.join(tmp, 'external_texts.txt'), 'furni_tst*2_name=Green Test\nfurni_tst*2_desc=It is green\nfurni_tst*9_name=Unreleased Test\nfurni_tst_name=Test Item\nposter_1002_name=Some Poster\n');
+process.env.EXTERNAL_TEXTS_URL = path.join(tmp, 'external_texts.txt');
+process.env.EXTERNAL_VARIABLES_URL = 'none';
 const { seal, parseBundle, BundleError } = await import('../src/hcb.js');
 const { parse, LingoError } = await import('../src/lingo.js');
 const sync = await import('../src/sync.js');
@@ -401,5 +404,29 @@ test('shadows are always drawn first, under every layer', async () => {
     const d = decode((await app.inject('/render/sdz?direction=0&shadow=1')).rawPayload);
     const o = 3; // shadow reg x 3 -> canvas origin x 3; layer a spans x -2..2, so canvas column 1..4 is red on top of the shadow
     assert.deepEqual(px(d, o - 2, 0), [255, 0, 0, 255]);
+  } finally { await app.close(); }
+});
+
+test('game data: names, descriptions and every colour variant from external texts + furnidata', async () => {
+  const app = await buildApp();
+  try {
+    const info = (await app.inject('/furni/tst')).json();
+    assert.equal(info.name, 'Test Item');
+    assert.deepEqual(info.variants.map((v) => v.class), ['tst*2', 'tst*3', 'tst*9']);
+    const v2 = info.variants.find((v) => v.variant === '2');
+    assert.equal(v2.name, 'Green Test'); assert.equal(v2.description, 'It is green');
+    assert.deepEqual(v2.hex, [null, '#00ff00']);
+    assert.deepEqual(info.variants.find((v) => v.variant === '3').hex, [null, '#ff0000']); // palette index 6
+    assert.equal(info.variants.find((v) => v.variant === '9').name, 'Unreleased Test'); // only in the texts
+    const one = (await app.inject('/furni/tst*2')).json();
+    assert.equal(one.name, 'Green Test'); assert.deepEqual(one.hex, [null, '#00ff00']);
+    const all = (await app.inject('/variants?only=variants&q=tst')).json();
+    assert.equal(all.total, 3);
+    assert.equal((await app.inject('/variants?q=poster')).json().items[0].class, 'poster*1002');
+    const sheet = await app.inject('/furni/tst/variants/sheet?bg=ffffff');
+    assert.equal(sheet.statusCode, 200);
+    assert.equal(sheet.headers['x-variants'], 'tst*2,tst*3,tst*9'); // *9 is only named in the texts: drawn with the class's colours
+    const html = await app.inject('/furni/tst/variants/sheet?format=html');
+    assert.ok(html.body.includes('Green Test') && html.body.includes('#00ff00'));
   } finally { await app.close(); }
 });

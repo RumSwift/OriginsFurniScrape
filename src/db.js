@@ -9,7 +9,11 @@ CREATE TABLE IF NOT EXISTS bundles(
   first_seen REAL, synced_at REAL, status TEXT DEFAULT 'ok');
 CREATE TABLE IF NOT EXISTS classes(class TEXT PRIMARY KEY, bundle TEXT);
 CREATE INDEX IF NOT EXISTS classes_bundle ON classes(bundle);
-CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);`;
+CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS variants(
+  class TEXT PRIMARY KEY, base TEXT, variant TEXT, kind TEXT, name TEXT, description TEXT,
+  colors TEXT, furnidata TEXT, sources TEXT);
+CREATE INDEX IF NOT EXISTS variants_base ON variants(base);`;
 
 export function db() {
   if (!cur || cur.path !== config.DB_PATH) {
